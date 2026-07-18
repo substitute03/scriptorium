@@ -700,9 +700,9 @@ function UI:CreateWindow()
 	frame:SetTitle("Scriptorium")
 	frame:SetStatusText("Account-wide macro repository")
 	frame:SetLayout("Flow")
-	frame:SetWidth(960)
+	frame:SetWidth(1120)
 	frame:SetHeight(640)
-	frame:EnableResize(true)
+	frame:EnableResize(false)
 	frame:SetCallback("OnClose", function(widget)
 		if AceGUI:IsReleasing(widget) then
 			return
@@ -780,15 +780,16 @@ function UI:CreateWindow()
 	-- Body: TreeGroup provides left tree; content holds list + detail.
 	local body = AceGUI:Create("SimpleGroup")
 	body:SetFullWidth(true)
-	body:SetHeight(520)
+	body:SetFullHeight(true)
+	body:SetAutoAdjustHeight(false)
 	body:SetLayout("Fill")
 	frame:AddChild(body)
 
 	local tree = AceGUI:Create("TreeGroup")
 	tree:SetFullWidth(true)
 	tree:SetFullHeight(true)
-	tree:SetLayout("Flow")
-	tree:SetTreeWidth(220, true)
+	tree:SetLayout("Fill")
+	tree:SetTreeWidth(220, false)
 	tree:SetCallback("OnGroupSelected", function(widget, event, uniquevalue)
 		if self._ignoreTreeSelect then
 			return
@@ -809,6 +810,7 @@ function UI:CreateWindow()
 	local content = AceGUI:Create("SimpleGroup")
 	content:SetFullWidth(true)
 	content:SetFullHeight(true)
+	content:SetAutoAdjustHeight(false)
 	content:SetLayout("Flow")
 	tree:AddChild(content)
 
@@ -817,6 +819,7 @@ function UI:CreateWindow()
 	listContainer:SetTitle("Contents")
 	listContainer:SetWidth(280)
 	listContainer:SetFullHeight(true)
+	listContainer:SetAutoAdjustHeight(false)
 	listContainer:SetLayout("Fill")
 	content:AddChild(listContainer)
 
@@ -825,13 +828,18 @@ function UI:CreateWindow()
 	listContainer:AddChild(listScroll)
 	self.listGroup = listScroll
 
-	-- Right detail
+	-- Right detail (scroll so editor controls stay inside the frame)
 	local detail = AceGUI:Create("InlineGroup")
 	detail:SetTitle("Entry")
 	detail:SetWidth(400)
 	detail:SetFullHeight(true)
-	detail:SetLayout("List")
+	detail:SetAutoAdjustHeight(false)
+	detail:SetLayout("Fill")
 	content:AddChild(detail)
+
+	local detailScroll = AceGUI:Create("ScrollFrame")
+	detailScroll:SetLayout("List")
+	detail:AddChild(detailScroll)
 
 	local nameEdit = AceGUI:Create("EditBox")
 	nameEdit:SetLabel("Name")
@@ -839,13 +847,13 @@ function UI:CreateWindow()
 	nameEdit:SetCallback("OnTextChanged", function()
 		if not self.suppressDirty then self:MarkDirty() end
 	end)
-	detail:AddChild(nameEdit)
+	detailScroll:AddChild(nameEdit)
 	self.nameEdit = nameEdit
 
 	local iconRow = AceGUI:Create("SimpleGroup")
 	iconRow:SetFullWidth(true)
 	iconRow:SetLayout("Flow")
-	detail:AddChild(iconRow)
+	detailScroll:AddChild(iconRow)
 
 	local icon = AceGUI:Create("Icon")
 	icon:SetImage(Compat.GetIconTexture(Compat.DefaultIcon()))
@@ -868,24 +876,24 @@ function UI:CreateWindow()
 	descEdit:SetCallback("OnTextChanged", function()
 		if not self.suppressDirty then self:MarkDirty() end
 	end)
-	detail:AddChild(descEdit)
+	detailScroll:AddChild(descEdit)
 	self.descEdit = descEdit
 
 	local bodyEdit = AceGUI:Create("MultiLineEditBox")
 	bodyEdit:SetLabel("Text Content")
 	bodyEdit:SetFullWidth(true)
-	bodyEdit:SetNumLines(14)
+	bodyEdit:SetNumLines(12)
 	bodyEdit:DisableButton(true)
 	bodyEdit:SetCallback("OnTextChanged", function()
 		if not self.suppressDirty then self:MarkDirty() end
 	end)
-	detail:AddChild(bodyEdit)
+	detailScroll:AddChild(bodyEdit)
 	self.bodyEdit = bodyEdit
 
 	local actions = AceGUI:Create("SimpleGroup")
 	actions:SetFullWidth(true)
 	actions:SetLayout("Flow")
-	detail:AddChild(actions)
+	detailScroll:AddChild(actions)
 
 	local function actionBtn(text, width, onClick)
 		local b = AceGUI:Create("Button")
@@ -930,4 +938,24 @@ function UI:CreateWindow()
 
 	self:LoadEntryIntoEditor(nil)
 	frame:SetStatusText("Ready — /scriptorium to toggle")
+
+	-- AceGUI Flow lays out before TreeGroup content has a real width, which stacks
+	-- Contents/Entry until a resize. Nudge width to force a second layout pass.
+	self:ForceLayout()
+	addon():ScheduleTimer(function()
+		self:ForceLayout()
+	end, 0)
+end
+
+function UI:ForceLayout()
+	local frame = self.frame
+	if not frame or not frame.frame then
+		return
+	end
+	local w = frame.frame:GetWidth()
+	if w and w > 0 then
+		frame:SetWidth(w + 1)
+		frame:SetWidth(w)
+	end
+	frame:DoLayout()
 end

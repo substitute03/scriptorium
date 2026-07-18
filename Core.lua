@@ -144,10 +144,24 @@ function Scriptorium:RegisterPopupDialogs()
 	}
 end
 
+-- AceGUI Frame uses FULLSCREEN_DIALOG; raise StaticPopups above it.
+function Scriptorium:RaisePopup(dialog)
+	if not dialog then
+		return
+	end
+	dialog:SetFrameStrata("FULLSCREEN_DIALOG")
+	local level = 110
+	if ns.UI and ns.UI.frame and ns.UI.frame.frame then
+		level = ns.UI.frame.frame:GetFrameLevel() + 10
+	end
+	dialog:SetFrameLevel(level)
+end
+
 function Scriptorium:ConfirmDelete(message, callback)
 	local dialog = StaticPopup_Show("SCRIPTORIUM_CONFIRM_DELETE", message)
 	if dialog then
 		dialog.data = { callback = callback }
+		self:RaisePopup(dialog)
 	end
 end
 
@@ -155,6 +169,7 @@ function Scriptorium:PromptName(message, default, callback)
 	local dialog = StaticPopup_Show("SCRIPTORIUM_PROMPT_NAME", message)
 	if dialog then
 		dialog.data = { default = default or "", callback = callback }
+		self:RaisePopup(dialog)
 	end
 end
 
@@ -162,6 +177,7 @@ function Scriptorium:ConfirmUnsaved(callback)
 	local dialog = StaticPopup_Show("SCRIPTORIUM_UNSAVED")
 	if dialog then
 		dialog.data = { callback = callback }
+		self:RaisePopup(dialog)
 	end
 end
 
