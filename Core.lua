@@ -149,12 +149,15 @@ function Scriptorium:RaisePopup(dialog)
 	if not dialog then
 		return
 	end
-	dialog:SetFrameStrata("FULLSCREEN_DIALOG")
+	dialog:SetFrameStrata("TOOLTIP")
 	local level = 110
 	if ns.UI and ns.UI.frame and ns.UI.frame.frame then
 		level = ns.UI.frame.frame:GetFrameLevel() + 10
 	end
 	dialog:SetFrameLevel(level)
+
+    dialog:ClearAllPoints()
+	dialog:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 end
 
 function Scriptorium:ConfirmDelete(message, callback)

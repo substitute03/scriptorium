@@ -311,6 +311,7 @@ function UI:AddListRow(info)
 	if info.height then
 		btn:SetHeight(info.height)
 	end
+    btn:SetFontObject(GameFontHighlight)
 	btn:SetCallback("OnClick", function(_, _, button)
 		if button == "LeftButton" then
 			local now = GetTime()
