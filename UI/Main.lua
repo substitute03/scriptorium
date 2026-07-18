@@ -557,6 +557,8 @@ end
 
 function UI:PickIcon()
 	if not self.selectedEntryId then
+		addon():Notify("Select an entry first.", true)
+		self:SetStatus("Select an entry before choosing an icon.")
 		return
 	end
 	local opened = Compat.ShowIconPicker(function(icon)
@@ -575,6 +577,177 @@ function UI:PickIcon()
 			self:MarkDirty()
 		end)
 	end
+end
+
+local ICON_PICKER_PAGE = 120
+
+function UI:ShowIconPickerDialog(callback)
+	if self.iconPickerFrame then
+		AceGUI:Release(self.iconPickerFrame)
+		self.iconPickerFrame = nil
+	end
+	if self.iconPickerTimer then
+		addon():CancelTimer(self.iconPickerTimer)
+		self.iconPickerTimer = nil
+	end
+
+	local filter = ""
+
+	local frame = AceGUI:Create("Window")
+	frame:SetTitle("Choose Icon")
+	frame:SetLayout("List")
+	frame:SetWidth(460)
+	frame:SetHeight(480)
+	frame:EnableResize(false)
+	self.iconPickerFrame = frame
+
+	-- Keep picker above the main Scriptorium window.
+	if frame.frame then
+		Compat.RaiseFrame(frame.frame)
+	end
+
+	local search = AceGUI:Create("EditBox")
+	search:SetLabel("Spell name, spell ID, or texture name")
+	search:SetFullWidth(true)
+	search:DisableButton(true)
+	search:SetText("")
+	frame:AddChild(search)
+
+	local status = AceGUI:Create("Label")
+	status:SetFullWidth(true)
+	status:SetText("Default icon shown — type to search for more.")
+	frame:AddChild(status)
+
+	local scroll = AceGUI:Create("ScrollFrame")
+	scroll:SetFullWidth(true)
+	scroll:SetHeight(340)
+	scroll:SetLayout("Flow")
+	frame:AddChild(scroll)
+
+	local onCacheUpdate
+
+	local function closePicker()
+		if onCacheUpdate then
+			Compat.UnregisterSpellIconCacheListener(onCacheUpdate)
+		end
+		if self.iconPickerTimer then
+			addon():CancelTimer(self.iconPickerTimer)
+			self.iconPickerTimer = nil
+		end
+		AceGUI:Release(frame)
+		self.iconPickerFrame = nil
+	end
+
+	local function selectIcon(icon)
+		closePicker()
+		callback(Compat.NormalizeIcon(icon))
+	end
+
+	local function addIconButton(icon)
+		local btn = AceGUI:Create("Icon")
+		btn:SetLabel(nil)
+		btn:SetImage(type(icon) == "number" and icon or Compat.GetIconTexture(icon))
+		btn:SetImageSize(36, 36)
+		btn:SetWidth(40)
+		btn:SetCallback("OnClick", function()
+			selectIcon(icon)
+		end)
+		scroll:AddChild(btn)
+	end
+
+	local function refreshGrid()
+		scroll:ReleaseChildren()
+		local q = filter:match("^%s*(.-)%s*$") or ""
+		local defaultIcon = Compat.DefaultIcon()
+
+		-- Always show the "?" icon first.
+		addIconButton(defaultIcon)
+		local shown = 1
+
+		if q == "" then
+			local _, _, done = Compat.GetSpellIconCacheProgress()
+			if done then
+				status:SetText("Default icon shown — type a spell name to search.")
+			else
+				status:SetText("Indexing spell icons… type a name anytime (e.g. Stealth).")
+			end
+			return
+		end
+
+		local matches = Compat.ResolveIconSearch(q)
+		for i = 1, #matches do
+			local icon = matches[i]
+			-- Skip duplicates of the default question-mark icon.
+			local normalized = Compat.NormalizeIcon(icon)
+			if normalized ~= defaultIcon and normalized ~= "INV_MISC_QUESTIONMARK"
+				and tostring(icon) ~= "134400" then
+				addIconButton(icon)
+				shown = shown + 1
+				if shown >= ICON_PICKER_PAGE then
+					break
+				end
+			end
+		end
+
+		local _, _, done = Compat.GetSpellIconCacheProgress()
+		if shown == 1 then
+			if done then
+				status:SetText("No matching spell icons found. Try another name or spell ID.")
+			else
+				status:SetText("Still indexing spell icons… results will update automatically.")
+			end
+		else
+			local suffix = done and "" or " (still indexing…)"
+			status:SetText(string.format("Showing %d result(s). Click an icon to use it.%s", shown, suffix))
+		end
+	end
+
+	onCacheUpdate = function()
+		if self.iconPickerFrame and filter:match("%S") then
+			refreshGrid()
+		end
+	end
+	Compat.RegisterSpellIconCacheListener(onCacheUpdate)
+	Compat.StartSpellIconCache()
+
+	frame:SetCallback("OnClose", function(widget)
+		if onCacheUpdate then
+			Compat.UnregisterSpellIconCacheListener(onCacheUpdate)
+		end
+		if self.iconPickerTimer then
+			addon():CancelTimer(self.iconPickerTimer)
+			self.iconPickerTimer = nil
+		end
+		AceGUI:Release(widget)
+		if self.iconPickerFrame == widget then
+			self.iconPickerFrame = nil
+		end
+	end)
+
+	search:SetCallback("OnTextChanged", function(_, _, text)
+		filter = text or ""
+		if self.iconPickerTimer then
+			addon():CancelTimer(self.iconPickerTimer)
+		end
+		self.iconPickerTimer = addon():ScheduleTimer(function()
+			self.iconPickerTimer = nil
+			if self.iconPickerFrame then
+				refreshGrid()
+			end
+		end, 0.15)
+	end)
+
+	search:SetCallback("OnEnterPressed", function(_, _, text)
+		filter = text or ""
+		local matches = Compat.ResolveIconSearch(filter)
+		if #matches > 0 then
+			selectIcon(matches[1])
+		elseif filter:match("%S") then
+			selectIcon(filter)
+		end
+	end)
+
+	refreshGrid()
 end
 
 function UI:CopyText()
