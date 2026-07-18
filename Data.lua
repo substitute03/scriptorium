@@ -53,18 +53,6 @@ function Data:_EnsureSchema()
 	g.entries = g.entries or {}
 	g.nextId = g.nextId or 1
 	g.sortMode = g.sortMode or "name"
-
-	-- Seed helpful top-level folders on first run.
-	if not g.seeded then
-		if #g.folders[ROOT_ID].children == 0 and #g.folders[ROOT_ID].entries == 0 then
-			local shared = self:CreateFolder(ROOT_ID, "Shared")
-			self:CreateFolder(shared, "Mounts")
-			self:CreateFolder(shared, "Toys")
-			self:CreateFolder(shared, "Professions")
-			self:CreateFolder(ROOT_ID, "Misc")
-		end
-		g.seeded = true
-	end
 end
 
 function Data:_NextId(prefix)
