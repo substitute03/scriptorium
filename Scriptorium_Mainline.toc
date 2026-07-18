@@ -1,0 +1,17 @@
+## Interface: 120007
+## Title: Scriptorium
+## Notes: Account-wide file explorer for storing and organising macros and text.
+## Author: Scriptorium
+## Version: 1.0.0
+## SavedVariables: ScriptoriumDB
+## OptionalDeps: Ace3
+## X-Embeds: Ace3
+## X-Category: Miscellaneous
+
+embeds.xml
+Compat.lua
+Data.lua
+Search.lua
+MacroBridge.lua
+Core.lua
+UI\Main.lua

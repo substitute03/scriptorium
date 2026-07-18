@@ -1,0 +1,176 @@
+--- Core.lua
+--- AceAddon lifecycle, slash commands, messaging.
+local ADDON_NAME, ns = ...
+
+local Scriptorium = LibStub("AceAddon-3.0"):NewAddon(
+	"Scriptorium",
+	"AceConsole-3.0",
+	"AceEvent-3.0",
+	"AceTimer-3.0"
+)
+ns.Addon = Scriptorium
+_G.Scriptorium = Scriptorium
+
+local Data = ns.Data
+local Compat = ns.Compat
+
+local defaults = Data:GetDefaults()
+
+function Scriptorium:OnInitialize()
+	self.db = LibStub("AceDB-3.0"):New("ScriptoriumDB", defaults, true)
+	-- Force account-wide storage: always use the shared "Default" profile's global table.
+	-- AceDB `global` is already account-wide; profiles are unused for repository data.
+	Data:Init(self.db)
+
+	self:RegisterChatCommand("scriptorium", "SlashCommand")
+	self:RegisterChatCommand("script", "SlashCommand")
+
+	self:RegisterPopupDialogs()
+end
+
+function Scriptorium:OnEnable()
+	-- UI is opened on demand via slash command.
+end
+
+function Scriptorium:SlashCommand(input)
+	input = input and input:match("^%s*(.-)%s*$") or ""
+	if input == "help" then
+		self:Print("Commands:")
+		self:Print("  /scriptorium — toggle the repository window")
+		self:Print("  /script — same as /scriptorium")
+		return
+	end
+	if ns.UI and ns.UI.Toggle then
+		ns.UI:Toggle()
+	end
+end
+
+function Scriptorium:Notify(message, isError)
+	local prefix = "|cffc4a35aScriptorium|r: "
+	if isError then
+		self:Print(prefix .. "|cffff6666" .. message .. "|r")
+	else
+		self:Print(prefix .. message)
+	end
+end
+
+function Scriptorium:RegisterPopupDialogs()
+	StaticPopupDialogs["SCRIPTORIUM_CONFIRM_DELETE"] = {
+		text = "%s",
+		button1 = YES,
+		button2 = NO,
+		OnAccept = function(dialog)
+			if dialog.data and dialog.data.callback then
+				dialog.data.callback()
+			end
+		end,
+		timeout = 0,
+		whileDead = true,
+		hideOnEscape = true,
+		preferredIndex = 3,
+	}
+
+	StaticPopupDialogs["SCRIPTORIUM_PROMPT_NAME"] = {
+		text = "%s",
+		button1 = ACCEPT,
+		button2 = CANCEL,
+		hasEditBox = true,
+		maxLetters = 100,
+		OnAccept = function(dialog)
+			local editBox = dialog.editBox or dialog.EditBox or (dialog.GetEditBox and dialog:GetEditBox())
+			local text = editBox and editBox:GetText() or ""
+			if dialog.data and dialog.data.callback then
+				dialog.data.callback(text)
+			end
+		end,
+		OnShow = function(dialog)
+			local editBox = dialog.editBox or dialog.EditBox or (dialog.GetEditBox and dialog:GetEditBox())
+			if editBox then
+				if dialog.data and dialog.data.default then
+					editBox:SetText(dialog.data.default)
+					editBox:HighlightText()
+				end
+				editBox:SetFocus()
+			end
+		end,
+		EditBoxOnEnterPressed = function(editBox)
+			local dialog = editBox:GetParent()
+			local accept = dialog.button1 or dialog.Button1 or _G[dialog:GetName() .. "Button1"]
+			if accept then
+				accept:Click()
+			end
+		end,
+		timeout = 0,
+		whileDead = true,
+		hideOnEscape = true,
+		preferredIndex = 3,
+	}
+
+	StaticPopupDialogs["SCRIPTORIUM_UNSAVED"] = {
+		text = "You have unsaved changes. Discard them?",
+		button1 = YES,
+		button2 = NO,
+		OnAccept = function(dialog)
+			if dialog.data and dialog.data.callback then
+				dialog.data.callback()
+			end
+		end,
+		timeout = 0,
+		whileDead = true,
+		hideOnEscape = true,
+		preferredIndex = 3,
+	}
+
+	StaticPopupDialogs["SCRIPTORIUM_MACRO_SCOPE"] = {
+		text = "Create Blizzard macro as:",
+		button1 = "Global Macro",
+		button2 = "Character Macro",
+		button3 = CANCEL,
+		OnAccept = function(dialog)
+			if dialog.data and dialog.data.callback then
+				dialog.data.callback(false) -- global
+			end
+		end,
+		OnCancel = function(dialog)
+			-- button2 maps to OnCancel in 2-button mode; with 3 buttons behaviour varies.
+		end,
+		OnAlt = function(dialog)
+			-- unused
+		end,
+		timeout = 0,
+		whileDead = true,
+		hideOnEscape = true,
+		preferredIndex = 3,
+	}
+end
+
+function Scriptorium:ConfirmDelete(message, callback)
+	local dialog = StaticPopup_Show("SCRIPTORIUM_CONFIRM_DELETE", message)
+	if dialog then
+		dialog.data = { callback = callback }
+	end
+end
+
+function Scriptorium:PromptName(message, default, callback)
+	local dialog = StaticPopup_Show("SCRIPTORIUM_PROMPT_NAME", message)
+	if dialog then
+		dialog.data = { default = default or "", callback = callback }
+	end
+end
+
+function Scriptorium:ConfirmUnsaved(callback)
+	local dialog = StaticPopup_Show("SCRIPTORIUM_UNSAVED")
+	if dialog then
+		dialog.data = { callback = callback }
+	end
+end
+
+function Scriptorium:PromptMacroScope(callback)
+	-- Use a simple custom chooser via AceGUI if StaticPopup 3-button is awkward.
+	if ns.UI and ns.UI.ShowMacroScopeDialog then
+		ns.UI:ShowMacroScopeDialog(callback)
+		return
+	end
+	-- Fallback: global only via confirm-style (shouldn't happen).
+	callback(false)
+end
