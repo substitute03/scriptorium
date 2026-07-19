@@ -376,18 +376,14 @@ local function SetTruncatedFolderLabel(fontString, folder, maxWidth)
 	return true
 end
 
-local function LayoutTreeFolderLabel(button, addBtn, textLeft)
+local function LayoutTreeFolderLabel(button, textLeft)
 	local fs = button.text
 	if not fs then
 		return
 	end
 	fs:ClearAllPoints()
 	fs:SetPoint("LEFT", button, "LEFT", textLeft, 0)
-	if addBtn and addBtn:IsShown() then
-		fs:SetPoint("RIGHT", addBtn, "LEFT", -4, 0)
-	else
-		fs:SetPoint("RIGHT", button, "RIGHT", -4, 0)
-	end
+	fs:SetPoint("RIGHT", button, "RIGHT", -4, 0)
 	fs:SetJustifyH("LEFT")
 	fs:SetJustifyV("MIDDLE")
 	if fs.SetWordWrap then
@@ -405,8 +401,7 @@ local function LayoutTreeFolderLabel(button, addBtn, textLeft)
 	local maxWidth = fs:GetWidth() or 0
 	-- Width can be 0 before the first layout pass; fall back to button geometry.
 	if maxWidth < 1 and button.GetWidth then
-		local rightPad = (addBtn and addBtn:IsShown()) and 22 or 4
-		maxWidth = math.max(0, (button:GetWidth() or 0) - textLeft - rightPad)
+		maxWidth = math.max(0, (button:GetWidth() or 0) - textLeft - 4)
 	end
 	button._scriptoriumLabelTruncated = SetTruncatedFolderLabel(fs, folder, maxWidth)
 end
@@ -742,37 +737,12 @@ function UI:DecorateTreeAddButtons()
 		end
 
 		local addBtn = button._scriptoriumAdd
+		if addBtn then
+			addBtn:Hide()
+		end
 		local chevron = button._scriptoriumChevronBtn
 
 		if button:IsShown() and button.value then
-			if not addBtn then
-				addBtn = CreateFrame("Button", nil, button)
-				addBtn:SetSize(16, 16)
-				addBtn:SetPoint("RIGHT", button, "RIGHT", -2, 0)
-				addBtn:SetFrameLevel(button:GetFrameLevel() + 5)
-				addBtn:SetNormalTexture("Interface\\Buttons\\UI-PlusButton-Up")
-				addBtn:SetPushedTexture("Interface\\Buttons\\UI-PlusButton-Down")
-				addBtn:SetDisabledTexture("Interface\\Buttons\\UI-PlusButton-Disabled")
-				addBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight")
-				addBtn:SetScript("OnEnter", function(self)
-					GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-					GameTooltip:SetText("New folder")
-					GameTooltip:AddLine("Create a folder inside this one.", 1, 1, 1, true)
-					GameTooltip:Show()
-				end)
-				addBtn:SetScript("OnLeave", function()
-					GameTooltip:Hide()
-				end)
-				addBtn:SetScript("OnClick", function(btn)
-					if btn.folderId then
-						self:CreateFolder(btn.folderId)
-					end
-				end)
-				button._scriptoriumAdd = addBtn
-			end
-			addBtn.folderId = button.value
-			addBtn:Show()
-
 			local level = button.level or 1
 			local hasIcon = button.icon and button.icon:GetTexture()
 			local left = (hasIcon and 16 or 0) + (level == 1 and 8 or (8 * level))
@@ -825,11 +795,8 @@ function UI:DecorateTreeAddButtons()
 				end
 			end
 
-			LayoutTreeFolderLabel(button, addBtn, textLeft)
+			LayoutTreeFolderLabel(button, textLeft)
 		else
-			if addBtn then
-				addBtn:Hide()
-			end
 			if chevron then
 				chevron:Hide()
 			end
