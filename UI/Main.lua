@@ -323,6 +323,344 @@ function UI:SetupFolderRowDrag(button)
 	button._scriptoriumDragHooked = true
 end
 
+--- Truncate a folder label to fit maxWidth, preserving root gold coloring / counts.
+--- Returns true if the visible text was truncated.
+local function SetTruncatedFolderLabel(fontString, folder, maxWidth)
+	if not fontString or not folder then
+		return false
+	end
+	local isRoot = folder.id == Data:GetRootId()
+	local entryCount = 0
+	if not isRoot then
+		for _, entryId in ipairs(folder.entries or {}) do
+			if Data:GetEntry(entryId) then
+				entryCount = entryCount + 1
+			end
+		end
+	end
+
+	local function makeLabel(name)
+		if isRoot then
+			return "|cffffd100" .. name .. "|r"
+		end
+		return string.format("%s (%d)", name, entryCount)
+	end
+
+	local fullName = folder.name or ""
+	fontString:SetText(makeLabel(fullName))
+	if maxWidth <= 0 then
+		return true
+	end
+	if (fontString:GetStringWidth() or 0) <= maxWidth then
+		return false
+	end
+
+	local ellipsis = "…"
+	fontString:SetText(makeLabel(ellipsis))
+	if (fontString:GetStringWidth() or 0) > maxWidth then
+		fontString:SetText(ellipsis)
+		return true
+	end
+
+	local lo, hi = 0, #fullName
+	while lo < hi do
+		local mid = math.floor((lo + hi + 1) / 2)
+		fontString:SetText(makeLabel(fullName:sub(1, mid) .. ellipsis))
+		if (fontString:GetStringWidth() or 0) <= maxWidth then
+			lo = mid
+		else
+			hi = mid - 1
+		end
+	end
+	fontString:SetText(makeLabel(fullName:sub(1, lo) .. ellipsis))
+	return true
+end
+
+local function LayoutTreeFolderLabel(button, addBtn, textLeft)
+	local fs = button.text
+	if not fs then
+		return
+	end
+	fs:ClearAllPoints()
+	fs:SetPoint("LEFT", button, "LEFT", textLeft, 0)
+	if addBtn and addBtn:IsShown() then
+		fs:SetPoint("RIGHT", addBtn, "LEFT", -4, 0)
+	else
+		fs:SetPoint("RIGHT", button, "RIGHT", -4, 0)
+	end
+	fs:SetJustifyH("LEFT")
+	fs:SetJustifyV("MIDDLE")
+	if fs.SetWordWrap then
+		fs:SetWordWrap(false)
+	end
+	if fs.SetNonSpaceWrap then
+		fs:SetNonSpaceWrap(false)
+	end
+	if fs.SetMaxLines then
+		fs:SetMaxLines(1)
+	end
+
+	local folder = Data:GetFolder(button.value)
+	button._scriptoriumFullName = folder and folder.name or nil
+	local maxWidth = fs:GetWidth() or 0
+	-- Width can be 0 before the first layout pass; fall back to button geometry.
+	if maxWidth < 1 and button.GetWidth then
+		local rightPad = (addBtn and addBtn:IsShown()) and 22 or 4
+		maxWidth = math.max(0, (button:GetWidth() or 0) - textLeft - rightPad)
+	end
+	button._scriptoriumLabelTruncated = SetTruncatedFolderLabel(fs, folder, maxWidth)
+end
+
+local TREE_WIDTH_MIN = 160
+local TREE_WIDTH_MAX = 600
+local TREE_WIDTH_DEFAULT = 320
+
+local function ApplyTreeWidth(tree, width)
+	width = math.max(TREE_WIDTH_MIN, math.min(TREE_WIDTH_MAX, width or TREE_WIDTH_MIN))
+	if not tree or not tree.treeframe then
+		return width
+	end
+	tree.treeframe:SetWidth(width)
+	local status = tree.status or tree.localstatus
+	if status then
+		status.treewidth = width
+		if status.fullwidth then
+			tree:OnWidthSet(status.fullwidth)
+		end
+	end
+	tree:DoLayout()
+	return width
+end
+
+--- Custom folder-pane splitter (AceGUI StartSizing is unreliable with dual anchors).
+function UI:EnsureTreeDragger()
+	local tree = self.treeGroup
+	if not tree or not tree.treeframe or not tree.frame then
+		return
+	end
+
+	-- Disable AceGUI's built-in grip; it sits under row buttons and StartSizing fails here.
+	if tree.dragger then
+		tree.dragger:EnableMouse(false)
+		tree.dragger:Hide()
+	end
+	if tree.SetTreeWidth then
+		local status = tree.status or tree.localstatus
+		if status then
+			status.treesizable = false
+		end
+	end
+
+	local splitter = self._treeSplitter
+	if not splitter then
+		splitter = CreateFrame("Frame", nil, tree.frame, "BackdropTemplate")
+		splitter:SetWidth(10)
+		splitter:SetBackdrop({
+			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+			tile = true,
+			tileSize = 16,
+			insets = { left = 3, right = 3, top = 7, bottom = 7 },
+		})
+		splitter:SetBackdropColor(1, 1, 1, 0)
+		splitter:EnableMouse(true)
+		self._treeSplitter = splitter
+	end
+
+	splitter:SetParent(tree.frame)
+	splitter:ClearAllPoints()
+	splitter:SetPoint("TOPLEFT", tree.treeframe, "TOPRIGHT", -5, -2)
+	splitter:SetPoint("BOTTOMLEFT", tree.treeframe, "BOTTOMRIGHT", -5, 2)
+	splitter:SetFrameStrata(tree.frame:GetFrameStrata() or "FULLSCREEN_DIALOG")
+	splitter:SetFrameLevel((tree.frame:GetFrameLevel() or 0) + 200)
+	splitter:Show()
+
+	splitter:SetScript("OnEnter", function(frame)
+		if not frame.isDragging then
+			frame:SetBackdropColor(1, 1, 1, 0.85)
+		end
+	end)
+	splitter:SetScript("OnLeave", function(frame)
+		if not frame.isDragging then
+			frame:SetBackdropColor(1, 1, 1, 0)
+		end
+	end)
+	splitter:SetScript("OnMouseDown", function(frame, button)
+		if button ~= "LeftButton" then
+			return
+		end
+		frame.isDragging = true
+		frame:SetBackdropColor(1, 1, 1, 0.85)
+		frame:SetScript("OnUpdate", function(self)
+			if not IsMouseButtonDown("LeftButton") then
+				self.isDragging = nil
+				self:SetScript("OnUpdate", nil)
+				self:SetBackdropColor(1, 1, 1, 0)
+				UI:ForceLayout()
+				UI:DecorateTreeAddButtons()
+				UI:EnsureTreeDragger()
+				UI:EnsureContentsDragger()
+				return
+			end
+			local left = tree.treeframe:GetLeft()
+			if not left then
+				return
+			end
+			local cursorX = GetCursorPosition() / tree.treeframe:GetEffectiveScale()
+			ApplyTreeWidth(tree, cursorX - left)
+			UI:ForceLayout()
+			UI:EnsureContentsDragger()
+		end)
+	end)
+	splitter:SetScript("OnMouseUp", function(frame, button)
+		if button ~= "LeftButton" or not frame.isDragging then
+			return
+		end
+		frame.isDragging = nil
+		frame:SetScript("OnUpdate", nil)
+		frame:SetBackdropColor(1, 1, 1, 0)
+		UI:ForceLayout()
+		UI:DecorateTreeAddButtons()
+		UI:EnsureTreeDragger()
+		UI:EnsureContentsDragger()
+	end)
+end
+
+local CONTENTS_WIDTH_MIN = 180
+local ENTRY_WIDTH_MIN = 260
+
+function UI:SyncPaneWidths()
+	local list = self.listContainer
+	local detail = self.detailContainer
+	local content = self.contentGroup
+	if not list or not detail or not content then
+		return
+	end
+	local parent = content.content or content.frame
+	if not parent or not parent.GetWidth then
+		return
+	end
+	local total = parent:GetWidth() or 0
+	if total < (CONTENTS_WIDTH_MIN + ENTRY_WIDTH_MIN + 8) then
+		return
+	end
+
+	local gap = 4
+	local maxList = total - ENTRY_WIDTH_MIN - gap
+	local listW = self._contentsWidth or (total * 0.44)
+	listW = math.max(CONTENTS_WIDTH_MIN, math.min(maxList, listW))
+	self._contentsWidth = listW
+
+	list:SetWidth(listW)
+	detail:SetWidth(total - listW - gap)
+	if content.DoLayout then
+		content:DoLayout()
+	end
+end
+
+--- Splitter between Contents and Entry (same interaction as the Folders splitter).
+function UI:EnsureContentsDragger()
+	local list = self.listContainer
+	local host = self.frame and self.frame.frame
+	if not list or not list.frame or not host then
+		return
+	end
+
+	local splitter = self._contentsSplitter
+	if not splitter then
+		splitter = CreateFrame("Frame", nil, host, "BackdropTemplate")
+		splitter:SetWidth(10)
+		splitter:SetBackdrop({
+			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+			tile = true,
+			tileSize = 16,
+			insets = { left = 3, right = 3, top = 7, bottom = 7 },
+		})
+		splitter:SetBackdropColor(1, 1, 1, 0)
+		splitter:EnableMouse(true)
+		self._contentsSplitter = splitter
+	end
+
+	splitter:SetParent(host)
+	splitter:ClearAllPoints()
+	splitter:SetPoint("TOPLEFT", list.frame, "TOPRIGHT", -5, 0)
+	splitter:SetPoint("BOTTOMLEFT", list.frame, "BOTTOMRIGHT", -5, 0)
+	splitter:SetFrameStrata(host:GetFrameStrata() or "FULLSCREEN_DIALOG")
+	splitter:SetFrameLevel((host:GetFrameLevel() or 0) + 200)
+	splitter:Show()
+
+	splitter:SetScript("OnEnter", function(frame)
+		if not frame.isDragging then
+			frame:SetBackdropColor(1, 1, 1, 0.85)
+		end
+	end)
+	splitter:SetScript("OnLeave", function(frame)
+		if not frame.isDragging then
+			frame:SetBackdropColor(1, 1, 1, 0)
+		end
+	end)
+	splitter:SetScript("OnMouseDown", function(frame, button)
+		if button ~= "LeftButton" then
+			return
+		end
+		frame.isDragging = true
+		frame:SetBackdropColor(1, 1, 1, 0.85)
+		frame:SetScript("OnUpdate", function(self)
+			if not IsMouseButtonDown("LeftButton") then
+				self.isDragging = nil
+				self:SetScript("OnUpdate", nil)
+				self:SetBackdropColor(1, 1, 1, 0)
+				UI:SyncPaneWidths()
+				UI:ForceLayout()
+				UI:EnsureContentsDragger()
+				return
+			end
+			local left = list.frame:GetLeft()
+			if not left then
+				return
+			end
+			local cursorX = GetCursorPosition() / list.frame:GetEffectiveScale()
+			UI._contentsWidth = cursorX - left
+			UI:SyncPaneWidths()
+			UI:EnsureContentsDragger()
+		end)
+	end)
+	splitter:SetScript("OnMouseUp", function(frame, button)
+		if button ~= "LeftButton" or not frame.isDragging then
+			return
+		end
+		frame.isDragging = nil
+		frame:SetScript("OnUpdate", nil)
+		frame:SetBackdropColor(1, 1, 1, 0)
+		UI:SyncPaneWidths()
+		UI:ForceLayout()
+		UI:EnsureContentsDragger()
+	end)
+end
+
+local function ShowFolderTooltip(btn)
+	local fullName = btn._scriptoriumFullName
+	if not fullName or fullName == "" then
+		local folder = btn.value and Data:GetFolder(btn.value)
+		fullName = folder and folder.name
+	end
+	if not fullName then
+		return
+	end
+	local tip = AceGUI.tooltip
+	tip:SetOwner(btn, "ANCHOR_NONE")
+	tip:ClearAllPoints()
+	tip:SetPoint("LEFT", btn, "RIGHT", 4, 0)
+	tip:SetText(fullName, 1, 0.82, 0, true)
+	tip:Show()
+end
+
+local function HideFolderTooltip()
+	if AceGUI.tooltip then
+		AceGUI.tooltip:Hide()
+	end
+	GameTooltip:Hide()
+end
+
 --- Add "+" / chevron controls and right-click menus on folder tree rows.
 function UI:DecorateTreeAddButtons()
 	local tree = self.treeGroup
@@ -377,6 +715,22 @@ function UI:DecorateTreeAddButtons()
 			if button.SetPushedTextOffset then
 				button:SetPushedTextOffset(0, 0)
 			end
+			if button.SetClipsChildren then
+				button:SetClipsChildren(true)
+			end
+			if not button._scriptoriumTipHooked then
+				button:HookScript("OnEnter", function(btn)
+					if self._draggingFolderId then
+						return
+					end
+					-- Always show the real folder name (label text may be truncated).
+					ShowFolderTooltip(btn)
+				end)
+				button:HookScript("OnLeave", function()
+					HideFolderTooltip()
+				end)
+				button._scriptoriumTipHooked = true
+			end
 		end
 
 		-- Fully disable AceGUI's built-in expand toggle (we use our own chevron).
@@ -387,10 +741,10 @@ function UI:DecorateTreeAddButtons()
 			button.toggle:SetAlpha(0)
 		end
 
-			local addBtn = button._scriptoriumAdd
-			local chevron = button._scriptoriumChevronBtn
+		local addBtn = button._scriptoriumAdd
+		local chevron = button._scriptoriumChevronBtn
 
-			if button:IsShown() and button.value then
+		if button:IsShown() and button.value then
 			if not addBtn then
 				addBtn = CreateFrame("Button", nil, button)
 				addBtn:SetSize(16, 16)
@@ -425,6 +779,7 @@ function UI:DecorateTreeAddButtons()
 			local hasChildren = button.treeline and button.treeline.hasChildren
 			local chevronSize = 18
 			local chevronGap = 2
+			local textLeft = left + chevronSize + chevronGap
 
 			-- Keep one font for normal + highlight so LockHighlight does not nudge glyphs.
 			local font = (level == 1) and GameFontNormal or GameFontHighlightSmall
@@ -464,26 +819,13 @@ function UI:DecorateTreeAddButtons()
 				chevron:ClearAllPoints()
 				chevron:SetPoint("LEFT", button, "LEFT", left, 0)
 				chevron:Show()
-
-				if button.text then
-					button.text:ClearAllPoints()
-					-- Anchor to the button (not chevron) so highlight/lock cannot shift the label.
-					button.text:SetPoint("LEFT", button, "LEFT", left + chevronSize + chevronGap, 0)
-					button.text:SetJustifyH("LEFT")
-					button.text:SetJustifyV("MIDDLE")
-				end
 			else
 				if chevron then
 					chevron:Hide()
 				end
-				-- Indent by chevron width so leaf labels align with parent folder names.
-				if button.text then
-					button.text:ClearAllPoints()
-					button.text:SetPoint("LEFT", button, "LEFT", left + chevronSize + chevronGap, 0)
-					button.text:SetJustifyH("LEFT")
-					button.text:SetJustifyV("MIDDLE")
-				end
 			end
+
+			LayoutTreeFolderLabel(button, addBtn, textLeft)
 		else
 			if addBtn then
 				addBtn:Hide()
@@ -491,6 +833,7 @@ function UI:DecorateTreeAddButtons()
 			if chevron then
 				chevron:Hide()
 			end
+			button._scriptoriumLabelTruncated = nil
 		end
 	end
 end
@@ -1589,6 +1932,11 @@ function UI:CreateWindow()
 		AceGUI:Release(widget)
 		self.frame = nil
 		self.treeGroup = nil
+		self._treeSplitter = nil
+		self._contentsSplitter = nil
+		self.contentGroup = nil
+		self.listContainer = nil
+		self.detailContainer = nil
 		self.listGroup = nil
 		self.nameEdit = nil
 		self.descEdit = nil
@@ -1668,7 +2016,16 @@ function UI:CreateWindow()
 	tree:SetFullWidth(true)
 	tree:SetFullHeight(true)
 	tree:SetLayout("Fill")
-	tree:SetTreeWidth(280, false)
+	tree:SetTreeWidth(TREE_WIDTH_DEFAULT, false)
+	tree:EnableButtonTooltips(false)
+	if tree.treeframe then
+		if tree.treeframe.SetResizeBounds then
+			tree.treeframe:SetResizeBounds(TREE_WIDTH_MIN, 1, TREE_WIDTH_MAX, 1600)
+		elseif tree.treeframe.SetMaxResize then
+			tree.treeframe:SetMinResize(TREE_WIDTH_MIN, 1)
+			tree.treeframe:SetMaxResize(TREE_WIDTH_MAX, 1600)
+		end
+	end
 	tree:SetCallback("OnGroupSelected", function(widget, event, uniquevalue)
 		if self._ignoreTreeSelect then
 			return
@@ -1682,34 +2039,43 @@ function UI:CreateWindow()
 			self:SelectFolder(folderId)
 		end
 	end)
+	tree:SetCallback("OnTreeResize", function()
+		self:ForceLayout()
+		self:DecorateTreeAddButtons()
+		self:EnsureTreeDragger()
+		self:EnsureContentsDragger()
+	end)
 	-- Keep per-row "+" buttons in sync when the tree refreshes (expand/scroll).
 	local origRefreshTree = tree.RefreshTree
 	tree.RefreshTree = function(widget, ...)
 		origRefreshTree(widget, ...)
 		self:DecorateTreeAddButtons()
+		self:EnsureTreeDragger()
+		self:EnsureContentsDragger()
 	end
 	body:AddChild(tree)
 	self.treeGroup = tree
+	self:EnsureTreeDragger()
 
 	-- Content area inside tree group: two columns.
-	-- Use relative widths so Contents+Entry always share one row. Fixed widths that
-	-- exceed the TreeGroup content area cause Flow to wrap; with FullHeight on
-	-- Contents, the wrapped Entry row is then skipped and the panel disappears.
+	-- Absolute widths (synced by SyncPaneWidths) so a Contents/Entry splitter can resize them.
 	local content = AceGUI:Create("SimpleGroup")
 	content:SetFullWidth(true)
 	content:SetFullHeight(true)
 	content:SetAutoAdjustHeight(false)
 	content:SetLayout("Flow")
 	tree:AddChild(content)
+	self.contentGroup = content
 
 	-- Centre list
 	local listContainer = AceGUI:Create("InlineGroup")
 	listContainer:SetTitle("Contents")
-	listContainer:SetRelativeWidth(0.44)
+	listContainer:SetWidth(320)
 	listContainer:SetFullHeight(true)
 	listContainer:SetAutoAdjustHeight(false)
 	listContainer:SetLayout("Fill")
 	content:AddChild(listContainer)
+	self.listContainer = listContainer
 
 	-- Place sort control beside the "Contents" title text.
 	listContainer.titletext:ClearAllPoints()
@@ -1734,11 +2100,12 @@ function UI:CreateWindow()
 	-- Right detail (scroll so editor controls stay inside the frame)
 	local detail = AceGUI:Create("InlineGroup")
 	detail:SetTitle("Entry")
-	detail:SetRelativeWidth(0.55)
+	detail:SetWidth(480)
 	detail:SetFullHeight(true)
 	detail:SetAutoAdjustHeight(false)
 	detail:SetLayout("Fill")
 	content:AddChild(detail)
+	self.detailContainer = detail
 
 	local detailScroll = AceGUI:Create("ScrollFrame")
 	detailScroll:SetLayout("List")
@@ -1857,4 +2224,7 @@ function UI:ForceLayout()
 		frame:SetWidth(w)
 	end
 	frame:DoLayout()
+	self:SyncPaneWidths()
+	self:EnsureTreeDragger()
+	self:EnsureContentsDragger()
 end
