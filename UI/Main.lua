@@ -190,6 +190,52 @@ function UI:RefreshTree()
 	end
 	self.treeGroup:SetTree(Data:BuildTree())
 	self:RefreshTreeSelection()
+	self:DecorateTreeAddButtons()
+end
+
+--- Add a "+" control on each visible folder row to create a child folder.
+function UI:DecorateTreeAddButtons()
+	local tree = self.treeGroup
+	if not tree or not tree.buttons then
+		return
+	end
+	for _, button in ipairs(tree.buttons) do
+		local addBtn = button._scriptoriumAdd
+		if button:IsShown() and button.value then
+			if not addBtn then
+				addBtn = CreateFrame("Button", nil, button)
+				addBtn:SetSize(16, 16)
+				addBtn:SetPoint("RIGHT", button, "RIGHT", -2, 0)
+				addBtn:SetFrameLevel(button:GetFrameLevel() + 5)
+				addBtn:SetNormalTexture("Interface\\Buttons\\UI-PlusButton-Up")
+				addBtn:SetPushedTexture("Interface\\Buttons\\UI-PlusButton-Down")
+				addBtn:SetDisabledTexture("Interface\\Buttons\\UI-PlusButton-Disabled")
+				addBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight")
+				addBtn:SetScript("OnEnter", function(self)
+					GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+					GameTooltip:SetText("New folder")
+					GameTooltip:AddLine("Create a folder inside this one.", 1, 1, 1, true)
+					GameTooltip:Show()
+				end)
+				addBtn:SetScript("OnLeave", function()
+					GameTooltip:Hide()
+				end)
+				addBtn:SetScript("OnClick", function(btn)
+					if btn.folderId then
+						self:CreateFolder(btn.folderId)
+					end
+				end)
+				button._scriptoriumAdd = addBtn
+			end
+			addBtn.folderId = button.value
+			addBtn:Show()
+			if button.text then
+				button.text:SetPoint("RIGHT", addBtn, "LEFT", -4, 2)
+			end
+		elseif addBtn then
+			addBtn:Hide()
+		end
+	end
 end
 
 function UI:RefreshTreeSelection()
@@ -223,33 +269,44 @@ function UI:RefreshList()
 	end
 
 	local folderId = self.selectedFolderId or Data:GetRootId()
-	local folders, entries = Data:GetSortedChildren(folderId)
+	local _, entries = Data:GetSortedChildren(folderId)
 
-	local header = AceGUI:Create("Label")
-	header:SetFullWidth(true)
-	header:SetText("|cffffd100" .. Data:GetFolderPath(folderId) .. "|r")
-	self.listGroup:AddChild(header)
+	local headerRow = AceGUI:Create("SimpleGroup")
+	headerRow:SetFullWidth(true)
+	headerRow:SetLayout("Flow")
+	self.listGroup:AddChild(headerRow)
 
-	if #folders == 0 and #entries == 0 then
+	local addEntryBtn = AceGUI:Create("Icon")
+	addEntryBtn:SetImage("Interface\\Buttons\\UI-PlusButton-Up")
+	addEntryBtn:SetImageSize(16, 16)
+	addEntryBtn:SetWidth(22)
+	addEntryBtn:SetLabel(nil)
+	addEntryBtn:SetCallback("OnClick", function()
+		self:CreateEntry()
+	end)
+	addEntryBtn:SetCallback("OnEnter", function(widget)
+		GameTooltip:SetOwner(widget.frame, "ANCHOR_RIGHT")
+		GameTooltip:SetText("New entry")
+		GameTooltip:AddLine("Create an entry in this folder.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	addEntryBtn:SetCallback("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+	headerRow:AddChild(addEntryBtn)
+	self.addEntryButton = addEntryBtn
+
+	local pathLabel = AceGUI:Create("Label")
+	pathLabel:SetWidth(230)
+	pathLabel:SetText("|cffffd100" .. Data:GetFolderPath(folderId) .. "|r")
+	headerRow:AddChild(pathLabel)
+
+	if #entries == 0 then
 		local empty = AceGUI:Create("Label")
 		empty:SetFullWidth(true)
-		empty:SetText("This folder is empty.")
+		empty:SetText("No entries in this folder.")
 		self.listGroup:AddChild(empty)
 		return
-	end
-
-	for _, folder in ipairs(folders) do
-		self:AddListRow({
-			kind = "folder",
-			id = folder.id,
-			label = "|cff66aaff[Folder]|r " .. folder.name,
-			onClick = function()
-				self:SelectFolder(folder.id)
-			end,
-			onDouble = function()
-				self:SelectFolder(folder.id)
-			end,
-		})
 	end
 
 	for _, entry in ipairs(entries) do
@@ -367,13 +424,27 @@ function UI:ShowListContextMenu(info)
 	end
 end
 
-function UI:CreateFolder()
-	local parentId = self.selectedFolderId or Data:GetRootId()
+function UI:CreateFolder(parentId)
+	parentId = parentId or self.selectedFolderId or Data:GetRootId()
 	addon():PromptName("New folder name:", "New Folder", function(name)
 		local id, err = Data:CreateFolder(parentId, name)
 		if not id then
 			addon():Notify(err, true)
 			return
+		end
+		-- Expand parent in the tree so the new folder is visible.
+		if self.treeGroup then
+			local status = self.treeGroup.status or self.treeGroup.localstatus
+			if status and status.groups then
+				local pathParts = {}
+				local walk = parentId
+				while walk do
+					table.insert(pathParts, 1, walk)
+					local folder = Data:GetFolder(walk)
+					walk = folder and folder.parentId
+				end
+				status.groups[table.concat(pathParts, "\001")] = true
+			end
 		end
 		self:SelectFolder(parentId, true)
 		self:RefreshAll()
@@ -938,8 +1009,6 @@ function UI:CreateWindow()
 		return b
 	end
 
-	toolButton("New Folder", 100, function() self:CreateFolder() end)
-	toolButton("New Entry", 100, function() self:CreateEntry() end)
 	toolButton("Rename Folder", 110, function() self:RenameSelectedFolder() end)
 	toolButton("Delete Folder", 110, function() self:DeleteSelectedFolder() end)
 	toolButton("Move…", 70, function() self:MoveSelectedIntoFolder() end)
@@ -977,6 +1046,12 @@ function UI:CreateWindow()
 			self:SelectFolder(folderId)
 		end
 	end)
+	-- Keep per-row "+" buttons in sync when the tree refreshes (expand/scroll).
+	local origRefreshTree = tree.RefreshTree
+	tree.RefreshTree = function(widget, ...)
+		origRefreshTree(widget, ...)
+		self:DecorateTreeAddButtons()
+	end
 	body:AddChild(tree)
 	self.treeGroup = tree
 
