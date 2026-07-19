@@ -1327,11 +1327,11 @@ end
 
 function UI:CreateFolder(parentId)
 	parentId = parentId or self.selectedFolderId or Data:GetRootId()
-	addon():PromptName("New folder name:", "New Folder", function(name)
+	addon():PromptName("New folder name:", "New Folder", function(name, dialog)
 		local id, err = Data:CreateFolder(parentId, name)
 		if not id then
-			addon():Notify(err, true)
-			return
+			addon():SetPromptError(dialog, err or "A folder with that name already exists.")
+			return false
 		end
 		-- Expand parent in the tree so the new folder is visible.
 		if self.treeGroup then
@@ -1469,11 +1469,11 @@ function UI:RenameSelectedFolder(folderId)
 	if not folder then
 		return
 	end
-	addon():PromptName("Rename folder:", folder.name, function(name)
+	addon():PromptName("Rename folder:", folder.name, function(name, dialog)
 		local ok, err = Data:RenameFolder(id, name)
 		if not ok then
-			addon():Notify(err, true)
-			return
+			addon():SetPromptError(dialog, err or "A folder with that name already exists.")
+			return false
 		end
 		self:RefreshAll()
 	end)

@@ -80,7 +80,10 @@ function Scriptorium:RegisterPopupDialogs()
 			local editBox = dialog.editBox or dialog.EditBox or (dialog.GetEditBox and dialog:GetEditBox())
 			local text = editBox and editBox:GetText() or ""
 			if dialog.data and dialog.data.callback then
-				dialog.data.callback(text)
+				-- Callback may return false to keep the dialog open (e.g. validation error).
+				if dialog.data.callback(text, dialog) == false then
+					return true
+				end
 			end
 		end,
 		OnShow = function(dialog)
@@ -92,6 +95,8 @@ function Scriptorium:RegisterPopupDialogs()
 				end
 				editBox:SetFocus()
 			end
+			Scriptorium:SetPromptError(dialog, nil)
+			Scriptorium:EnsurePromptHeight(dialog)
 		end,
 		EditBoxOnEnterPressed = function(editBox)
 			local dialog = editBox:GetParent()
@@ -168,18 +173,49 @@ function Scriptorium:ConfirmDelete(message, callback)
 	end
 end
 
+--- Tall enough for the prompt plus a one-line validation error.
+local PROMPT_NAME_HEIGHT = 148
+
+function Scriptorium:EnsurePromptHeight(dialog)
+	if not dialog then
+		return
+	end
+	dialog:SetHeight(PROMPT_NAME_HEIGHT)
+	dialog.maxHeightSoFar = PROMPT_NAME_HEIGHT
+end
+
+--- Show or clear a red validation message inside a PromptName popup.
+function Scriptorium:SetPromptError(dialog, message)
+	if not dialog or not dialog.data then
+		return
+	end
+	local textWidget = dialog.text or dialog.Text or (dialog.GetName and _G[dialog:GetName() .. "Text"])
+	if not textWidget then
+		return
+	end
+	local prompt = dialog.data.prompt or ""
+	if message and message ~= "" then
+		textWidget:SetText(prompt .. "\n\n|cffff5555" .. message .. "|r")
+	else
+		textWidget:SetText(prompt)
+	end
+	self:EnsurePromptHeight(dialog)
+end
+
 function Scriptorium:PromptName(message, default, callback)
 	local dialog = StaticPopup_Show("SCRIPTORIUM_PROMPT_NAME", message)
 	if dialog then
 		-- StaticPopup_Show fires OnShow before we can assign data, so set the
 		-- edit box text here after show rather than relying on OnShow alone.
-		dialog.data = { default = default or "", callback = callback }
+		dialog.data = { default = default or "", callback = callback, prompt = message }
 		local editBox = dialog.editBox or dialog.EditBox or (dialog.GetEditBox and dialog:GetEditBox())
 		if editBox then
 			editBox:SetText(default or "")
 			editBox:HighlightText()
 			editBox:SetFocus()
 		end
+		self:SetPromptError(dialog, nil)
+		self:EnsurePromptHeight(dialog)
 		self:RaisePopup(dialog)
 	end
 end

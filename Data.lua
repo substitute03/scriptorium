@@ -88,6 +88,25 @@ function Data:GetEntry(id)
 	return self.db.global.entries[id]
 end
 
+--- True if parent already has a child folder with this name (case-insensitive).
+--- @param excludeId string|nil folder id to ignore (for rename)
+function Data:FolderNameExistsInParent(parentId, name, excludeId)
+	local parent = self:GetFolder(parentId)
+	if not parent or not name then
+		return false
+	end
+	local lower = name:lower()
+	for _, childId in ipairs(parent.children) do
+		if childId ~= excludeId then
+			local child = self:GetFolder(childId)
+			if child and child.name:lower() == lower then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 function Data:CreateFolder(parentId, name)
 	local parent = self:GetFolder(parentId)
 	if not parent then
@@ -96,6 +115,9 @@ function Data:CreateFolder(parentId, name)
 	name = name and name:match("^%s*(.-)%s*$") or "New Folder"
 	if name == "" then
 		name = "New Folder"
+	end
+	if self:FolderNameExistsInParent(parentId, name) then
+		return nil, string.format("A folder named \"%s\" already exists here.", name)
 	end
 
 	local id = self:_NextId("f")
@@ -123,6 +145,9 @@ function Data:RenameFolder(id, name)
 	name = name and name:match("^%s*(.-)%s*$") or ""
 	if name == "" then
 		return false, "Name cannot be empty"
+	end
+	if self:FolderNameExistsInParent(folder.parentId, name, id) then
+		return false, string.format("A folder named \"%s\" already exists here.", name)
 	end
 	folder.name = name
 	return true
@@ -184,6 +209,9 @@ function Data:MoveFolder(id, newParentId, index)
 	end
 
 	local oldParent = self:GetFolder(folder.parentId)
+	if newParentId ~= folder.parentId and self:FolderNameExistsInParent(newParentId, folder.name) then
+		return false, string.format("A folder named \"%s\" already exists here.", folder.name)
+	end
 	if oldParent then
 		self:_RemoveFromList(oldParent.children, id)
 	end
