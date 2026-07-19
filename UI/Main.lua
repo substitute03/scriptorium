@@ -451,6 +451,9 @@ function UI:ShowListContextMenu(owner, info)
 				rootDescription:CreateButton("Duplicate", function()
 					self:DuplicateSelectedEntry(entryId)
 				end)
+				rootDescription:CreateButton("Move into Folder…", function()
+					self:MoveSelectedIntoFolder(entryId)
+				end)
 				rootDescription:CreateButton("Delete", function()
 					self:DeleteSelectedEntry(entryId)
 				end)
@@ -495,6 +498,14 @@ function UI:ShowListContextMenu(owner, info)
 			menuInfo.notCheckable = true
 			menuInfo.func = function()
 				self:DuplicateSelectedEntry(entryId)
+			end
+			UIDropDownMenu_AddButton(menuInfo, level)
+
+			menuInfo = UIDropDownMenu_CreateInfo()
+			menuInfo.text = "Move into Folder…"
+			menuInfo.notCheckable = true
+			menuInfo.func = function()
+				self:MoveSelectedIntoFolder(entryId)
 			end
 			UIDropDownMenu_AddButton(menuInfo, level)
 
@@ -749,12 +760,9 @@ function UI:MoveFolderDown()
 	end
 end
 
-function UI:MoveSelectedIntoFolder()
-	-- Prompt for destination folder by path list is complex; use name of folder ID path.
-	-- Simple approach: prompt for destination folder name under root search.
-	local movingFolder = self.selectedFolderId
-	local movingEntry = self.selectedEntryId
-	if not movingFolder and not movingEntry then
+function UI:MoveSelectedIntoFolder(entryId)
+	local movingEntry = entryId or self.selectedEntryId
+	if not movingEntry then
 		return
 	end
 
@@ -768,25 +776,14 @@ function UI:MoveSelectedIntoFolder()
 			addon():Notify("Destination folder not found.", true)
 			return
 		end
-		if movingEntry then
-			local ok, err = Data:MoveEntry(movingEntry, destId)
-			if not ok then
-				addon():Notify(err, true)
-			else
-				self:SelectFolder(destId, true)
-				self:SelectEntry(movingEntry, true)
-				self:RefreshAll()
-				self:SetStatus("Entry moved.")
-			end
-		elseif movingFolder then
-			local ok, err = Data:MoveFolder(movingFolder, destId)
-			if not ok then
-				addon():Notify(err, true)
-			else
-				self:SelectFolder(movingFolder, true)
-				self:RefreshAll()
-				self:SetStatus("Folder moved.")
-			end
+		local ok, err = Data:MoveEntry(movingEntry, destId)
+		if not ok then
+			addon():Notify(err, true)
+		else
+			self:SelectFolder(destId, true)
+			self:SelectEntry(movingEntry, true)
+			self:RefreshAll()
+			self:SetStatus("Entry moved.")
 		end
 	end)
 end
@@ -1183,7 +1180,6 @@ function UI:CreateWindow()
 		return b
 	end
 
-	toolButton("Move…", 70, function() self:MoveSelectedIntoFolder() end)
 	toolButton("Up", 50, function() self:MoveFolderUp() end)
 	toolButton("Down", 55, function() self:MoveFolderDown() end)
 	self.sortButton = toolButton(
