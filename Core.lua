@@ -171,7 +171,15 @@ end
 function Scriptorium:PromptName(message, default, callback)
 	local dialog = StaticPopup_Show("SCRIPTORIUM_PROMPT_NAME", message)
 	if dialog then
+		-- StaticPopup_Show fires OnShow before we can assign data, so set the
+		-- edit box text here after show rather than relying on OnShow alone.
 		dialog.data = { default = default or "", callback = callback }
+		local editBox = dialog.editBox or dialog.EditBox or (dialog.GetEditBox and dialog:GetEditBox())
+		if editBox then
+			editBox:SetText(default or "")
+			editBox:HighlightText()
+			editBox:SetFocus()
+		end
 		self:RaisePopup(dialog)
 	end
 end

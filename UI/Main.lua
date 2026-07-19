@@ -193,13 +193,42 @@ function UI:RefreshTree()
 	self:DecorateTreeAddButtons()
 end
 
---- Add a "+" control on each visible folder row to create a child folder.
+--- Add a "+" control on each visible folder row to create a child folder,
+--- and wire right-click context menus for rename/delete.
 function UI:DecorateTreeAddButtons()
 	local tree = self.treeGroup
 	if not tree or not tree.buttons then
 		return
 	end
 	for _, button in ipairs(tree.buttons) do
+		if button:IsShown() and button.value and not button._scriptoriumMenuHooked then
+			button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+			local origOnClick = button:GetScript("OnClick")
+			button:SetScript("OnClick", function(btn, mouseButton, ...)
+				if mouseButton == "RightButton" then
+					local folderId = btn.value
+					if folderId then
+						self:WithUnsavedGuard(function()
+							if folderId ~= self.selectedFolderId then
+								self.selectedFolderId = folderId
+								self.selectedEntryId = nil
+								self:LoadEntryIntoEditor(nil)
+								self:RefreshTreeSelection()
+								self:RefreshList()
+								self:RefreshDetailEnabled()
+							end
+							self:ShowFolderContextMenu(btn, folderId)
+						end)
+					end
+					return
+				end
+				if origOnClick then
+					origOnClick(btn, mouseButton, ...)
+				end
+			end)
+			button._scriptoriumMenuHooked = true
+		end
+
 		local addBtn = button._scriptoriumAdd
 		if button:IsShown() and button.value then
 			if not addBtn then
@@ -397,16 +426,7 @@ end
 ------------------------------------------------------------------------
 
 function UI:ShowListContextMenu(info)
-	-- Lightweight action sheet via AceGUI window.
-	if info.kind == "folder" then
-		addon():PromptName("Rename folder:", Data:GetFolder(info.id).name, function(name)
-			local ok, err = Data:RenameFolder(info.id, name)
-			if not ok then
-				addon():Notify(err, true)
-			end
-			self:RefreshAll()
-		end)
-	elseif info.kind == "entry" then
+	if info.kind == "entry" then
 		-- Right-click selects then offers rename via prompt.
 		self:SelectEntry(info.id, true)
 		addon():PromptName("Rename entry:", Data:GetEntry(info.id).name, function(name)
@@ -421,6 +441,75 @@ function UI:ShowListContextMenu(info)
 				self:LoadEntryIntoEditor(Data:GetEntry(info.id))
 			end
 		end)
+	end
+end
+
+function UI:ShowFolderContextMenu(owner, folderId)
+	local folder = Data:GetFolder(folderId)
+	if not folder then
+		return
+	end
+	local isRoot = folderId == Data:GetRootId()
+
+	if MenuUtil and MenuUtil.CreateContextMenu then
+		local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
+			rootDescription:CreateTitle(folder.name)
+			local renameBtn = rootDescription:CreateButton("Rename Folder", function()
+				self:RenameSelectedFolder(folderId)
+			end)
+			local deleteBtn = rootDescription:CreateButton("Delete Folder", function()
+				self:DeleteSelectedFolder(folderId)
+			end)
+			if isRoot then
+				renameBtn:SetEnabled(false)
+				deleteBtn:SetEnabled(false)
+			end
+		end)
+		-- AceGUI frames use FULLSCREEN_DIALOG; default menus sit behind them.
+		if menu then
+			menu:SetFrameStrata("TOOLTIP")
+			menu:SetToplevel(true)
+		end
+		return
+	end
+
+	-- Classic / older clients: UIDropDownMenu at cursor.
+	if not self._folderDropDown then
+		self._folderDropDown = CreateFrame("Frame", "ScriptoriumFolderContextMenu", UIParent, "UIDropDownMenuTemplate")
+	end
+	self._folderDropDown:SetFrameStrata("TOOLTIP")
+	self._folderDropDown:SetToplevel(true)
+	UIDropDownMenu_Initialize(self._folderDropDown, function(_, level)
+		local info = UIDropDownMenu_CreateInfo()
+		info.text = folder.name
+		info.isTitle = true
+		info.notCheckable = true
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Rename Folder"
+		info.notCheckable = true
+		info.disabled = isRoot
+		info.func = function()
+			self:RenameSelectedFolder(folderId)
+		end
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Delete Folder"
+		info.notCheckable = true
+		info.disabled = isRoot
+		info.func = function()
+			self:DeleteSelectedFolder(folderId)
+		end
+		UIDropDownMenu_AddButton(info, level)
+	end, "MENU")
+	ToggleDropDownMenu(1, nil, self._folderDropDown, "cursor", 0, 0)
+	-- DropList frames are created by the dropdown system; raise them too.
+	local list = _G["DropDownList1"]
+	if list then
+		list:SetFrameStrata("TOOLTIP")
+		list:SetToplevel(true)
 	end
 end
 
@@ -466,8 +555,8 @@ function UI:CreateEntry()
 	end)
 end
 
-function UI:DeleteSelectedFolder()
-	local id = self.selectedFolderId
+function UI:DeleteSelectedFolder(folderId)
+	local id = folderId or self.selectedFolderId
 	if not id or id == Data:GetRootId() then
 		addon():Notify("Cannot delete the root folder.", true)
 		return
@@ -531,8 +620,8 @@ function UI:DuplicateSelectedEntry()
 	end)
 end
 
-function UI:RenameSelectedFolder()
-	local id = self.selectedFolderId
+function UI:RenameSelectedFolder(folderId)
+	local id = folderId or self.selectedFolderId
 	if not id or id == Data:GetRootId() then
 		addon():Notify("Cannot rename the root folder.", true)
 		return
@@ -1009,8 +1098,6 @@ function UI:CreateWindow()
 		return b
 	end
 
-	toolButton("Rename Folder", 110, function() self:RenameSelectedFolder() end)
-	toolButton("Delete Folder", 110, function() self:DeleteSelectedFolder() end)
 	toolButton("Move…", 70, function() self:MoveSelectedIntoFolder() end)
 	toolButton("Up", 50, function() self:MoveFolderUp() end)
 	toolButton("Down", 55, function() self:MoveFolderDown() end)
