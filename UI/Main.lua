@@ -284,8 +284,10 @@ function UI:SetupFolderRowDrag(button)
 		end
 		self._draggingFolderId = btn.value
 		-- Prefer a built-in cursor token; fall back silently if unavailable.
-		if SetCursor then
-			pcall(SetCursor, "Interface\\Cursor\\UI-Cursor-Move")
+		if SetCursorByMode then
+			pcall(SetCursorByMode, 43) -- HoldingHandCursor (open hand)
+		elseif SetCursor then
+			pcall(SetCursor, "Interface\\Cursor\\OpenHandGlow")
 		end
 	end)
 	button:SetScript("OnDragStop", function()
