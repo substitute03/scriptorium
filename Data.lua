@@ -43,11 +43,15 @@ function Data:_EnsureSchema()
 	if not g.folders[ROOT_ID] then
 		g.folders[ROOT_ID] = {
 			id = ROOT_ID,
-			name = "Macro Repository",
+			name = "Folders",
 			parentId = nil,
 			children = {},
 			entries = {},
 		}
+	else
+		-- Root is a container for folders only, not entries.
+		g.folders[ROOT_ID].name = g.folders[ROOT_ID].name or "Folders"
+		g.folders[ROOT_ID].entries = g.folders[ROOT_ID].entries or {}
 	end
 	g.rootId = ROOT_ID
 	g.entries = g.entries or {}
@@ -191,6 +195,9 @@ function Data:MoveFolder(id, newParentId, index)
 end
 
 function Data:CreateEntry(parentId, name)
+	if parentId == self:GetRootId() then
+		return nil, "Cannot add entries to the root Folders node"
+	end
 	local parent = self:GetFolder(parentId)
 	if not parent then
 		return nil, "Parent folder not found"
@@ -275,6 +282,9 @@ function Data:DuplicateEntry(id)
 end
 
 function Data:MoveEntry(id, newParentId, index)
+	if newParentId == self:GetRootId() then
+		return false, "Cannot move entries into the root Folders node"
+	end
 	local entry = self:GetEntry(id)
 	local newParent = self:GetFolder(newParentId)
 	if not entry or not newParent then
@@ -365,15 +375,18 @@ function Data:BuildTree()
 		if not folder then
 			return nil
 		end
+		local isRoot = folderId == self:GetRootId()
 		local entryCount = 0
-		for _, entryId in ipairs(folder.entries) do
-			if self:GetEntry(entryId) then
-				entryCount = entryCount + 1
+		if not isRoot then
+			for _, entryId in ipairs(folder.entries) do
+				if self:GetEntry(entryId) then
+					entryCount = entryCount + 1
+				end
 			end
 		end
 		local node = {
 			value = folderId,
-			text = string.format("%s (%d)", folder.name, entryCount),
+			text = isRoot and ("|cffffd100" .. folder.name .. "|r") or string.format("%s (%d)", folder.name, entryCount),
 		}
 		if #folder.children > 0 then
 			node.children = {}

@@ -399,6 +399,16 @@ function UI:RefreshList()
 	end
 
 	local folderId = self.selectedFolderId or Data:GetRootId()
+	local isRoot = folderId == Data:GetRootId()
+
+	if isRoot then
+		local hint = AceGUI:Create("Label")
+		hint:SetFullWidth(true)
+		hint:SetText("Select a folder to view and manage its contents.")
+		self.listGroup:AddChild(hint)
+		return
+	end
+
 	local _, entries = Data:GetSortedChildren(folderId)
 
 	local headerRow = AceGUI:Create("SimpleGroup")
@@ -735,6 +745,10 @@ end
 
 function UI:CreateEntry()
 	local parentId = self.selectedFolderId or Data:GetRootId()
+	if parentId == Data:GetRootId() then
+		addon():Notify("Select a folder before creating an entry.", true)
+		return
+	end
 	addon():PromptName("New entry name:", "New Entry", function(name)
 		local id, err = Data:CreateEntry(parentId, name)
 		if not id then
