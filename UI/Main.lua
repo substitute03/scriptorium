@@ -1087,8 +1087,6 @@ function UI:PickIcon()
 	end
 end
 
-local ICON_PICKER_PAGE = 120
-
 function UI:ShowIconPickerDialog(callback)
 	if self.iconPickerFrame then
 		AceGUI:Release(self.iconPickerFrame)
@@ -1100,6 +1098,12 @@ function UI:ShowIconPickerDialog(callback)
 	end
 
 	local filter = ""
+	local iconList = {}
+	local scrollOffset = 0
+	local COLS = 10
+	local ROWS = 8
+	local CELL = 40
+	local NUM_SHOWN = COLS * ROWS
 
 	local frame = AceGUI:Create("Window")
 	frame:SetTitle("Choose Icon")
@@ -1109,7 +1113,6 @@ function UI:ShowIconPickerDialog(callback)
 	frame:EnableResize(false)
 	self.iconPickerFrame = frame
 
-	-- Keep picker above the main Scriptorium window.
 	if frame.frame then
 		Compat.RaiseFrame(frame.frame)
 	end
@@ -1123,25 +1126,62 @@ function UI:ShowIconPickerDialog(callback)
 
 	local status = AceGUI:Create("Label")
 	status:SetFullWidth(true)
-	status:SetText("Default icon shown — type to search for more.")
+	status:SetText("")
 	frame:AddChild(status)
 
-	local scroll = AceGUI:Create("ScrollFrame")
-	scroll:SetFullWidth(true)
-	scroll:SetHeight(340)
-	scroll:SetLayout("Flow")
-	frame:AddChild(scroll)
+	-- Native recycled grid (same idea as Blizzard's macro popup): full icon
+	-- pool is scrollable; only a viewport of buttons exists.
+	-- IMPORTANT: parent native frames to the Window frame, not an AceGUI
+	-- SimpleGroup. AceGUI pools SimpleGroups — leftover children would reappear
+	-- in Contents the next time RefreshList acquires one (e.g. on Save).
+	local spacer = AceGUI:Create("SimpleGroup")
+	spacer:SetFullWidth(true)
+	spacer:SetHeight(ROWS * CELL + 4)
+	spacer:SetLayout("Fill")
+	frame:AddChild(spacer)
 
-	local onCacheUpdate
+	local container = CreateFrame("Frame", nil, frame.frame)
+	container:SetAllPoints(spacer.frame)
+
+	local scrollBar = CreateFrame("Slider", nil, container, "UIPanelScrollBarTemplate")
+	scrollBar:SetPoint("TOPLEFT", container, "TOPRIGHT", -18, -16)
+	scrollBar:SetPoint("BOTTOMLEFT", container, "BOTTOMRIGHT", -18, 16)
+	scrollBar:SetMinMaxValues(0, 0)
+	scrollBar:SetValueStep(1)
+	if scrollBar.SetObeyStepOnDrag then
+		scrollBar:SetObeyStepOnDrag(true)
+	end
+	scrollBar:SetValue(0)
+
+	local buttonParent = CreateFrame("Frame", nil, container)
+	buttonParent:SetPoint("TOPLEFT")
+	buttonParent:SetPoint("BOTTOMRIGHT", container, "BOTTOMRIGHT", -22, 0)
+	buttonParent:EnableMouseWheel(true)
+
+	-- Keep the grid aligned if AceGUI reflows the spacer.
+	spacer.frame:HookScript("OnSizeChanged", function()
+		if container then
+			container:ClearAllPoints()
+			container:SetAllPoints(spacer.frame)
+		end
+	end)
+
+	local function destroyGrid()
+		if not container then
+			return
+		end
+		container:Hide()
+		container:SetParent(nil)
+		container:ClearAllPoints()
+		container = nil
+	end
 
 	local function closePicker()
-		if onCacheUpdate then
-			Compat.UnregisterSpellIconCacheListener(onCacheUpdate)
-		end
 		if self.iconPickerTimer then
 			addon():CancelTimer(self.iconPickerTimer)
 			self.iconPickerTimer = nil
 		end
+		destroyGrid()
 		AceGUI:Release(frame)
 		self.iconPickerFrame = nil
 	end
@@ -1151,81 +1191,104 @@ function UI:ShowIconPickerDialog(callback)
 		callback(Compat.NormalizeIcon(icon))
 	end
 
-	local function addIconButton(icon)
-		local btn = AceGUI:Create("Icon")
-		btn:SetLabel(nil)
-		btn:SetImage(type(icon) == "number" and icon or Compat.GetIconTexture(icon))
-		btn:SetImageSize(36, 36)
-		btn:SetWidth(40)
-		btn:SetCallback("OnClick", function()
-			selectIcon(icon)
+	local buttons = {}
+	for i = 1, NUM_SHOWN do
+		local btn = CreateFrame("Button", nil, buttonParent)
+		btn:SetSize(CELL - 2, CELL - 2)
+		local col = (i - 1) % COLS
+		local row = math.floor((i - 1) / COLS)
+		btn:SetPoint("TOPLEFT", buttonParent, "TOPLEFT", col * CELL, -row * CELL)
+		local tex = btn:CreateTexture(nil, "ARTWORK")
+		tex:SetAllPoints()
+		btn.tex = tex
+		btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
+		btn:SetScript("OnClick", function(self)
+			if self.iconValue ~= nil then
+				selectIcon(self.iconValue)
+			end
 		end)
-		scroll:AddChild(btn)
+		btn:Hide()
+		buttons[i] = btn
+	end
+
+	local function currentList()
+		local q = filter:match("^%s*(.-)%s*$") or ""
+		if q == "" then
+			-- Full Blizzard macro UI icon pool, with "?" always first.
+			local defaultIcon = Compat.DefaultIcon()
+			local list = { defaultIcon }
+			local pool = Compat.CollectMacroIcons()
+			for i = 1, #pool do
+				local icon = pool[i]
+				local normalized = Compat.NormalizeIcon(icon)
+				if normalized ~= defaultIcon and normalized ~= "INV_MISC_QUESTIONMARK"
+					and tostring(icon) ~= "134400" then
+					list[#list + 1] = icon
+				end
+			end
+			return list
+		end
+		return Compat.ResolveIconSearch(q)
+	end
+
+	local function updateVisible()
+		local totalRows = math.max(1, math.ceil(#iconList / COLS))
+		local maxOffset = math.max(0, totalRows - ROWS)
+		if scrollOffset > maxOffset then
+			scrollOffset = maxOffset
+		end
+		for i = 1, NUM_SHOWN do
+			local idx = scrollOffset * COLS + i
+			local icon = iconList[idx]
+			local btn = buttons[i]
+			if icon ~= nil then
+				btn.iconValue = icon
+				btn.tex:SetTexture(type(icon) == "number" and icon or Compat.GetIconTexture(icon))
+				btn:Show()
+			else
+				btn.iconValue = nil
+				btn:Hide()
+			end
+		end
 	end
 
 	local function refreshGrid()
-		scroll:ReleaseChildren()
-		local q = filter:match("^%s*(.-)%s*$") or ""
-		local defaultIcon = Compat.DefaultIcon()
-
-		-- Always show the "?" icon first.
-		addIconButton(defaultIcon)
-		local shown = 1
-
-		if q == "" then
-			local _, _, done = Compat.GetSpellIconCacheProgress()
-			if done then
-				status:SetText("Default icon shown — type a spell name to search.")
-			else
-				status:SetText("Indexing spell icons… type a name anytime (e.g. Stealth).")
-			end
-			return
-		end
-
-		local matches = Compat.ResolveIconSearch(q)
-		for i = 1, #matches do
-			local icon = matches[i]
-			-- Skip duplicates of the default question-mark icon.
-			local normalized = Compat.NormalizeIcon(icon)
-			if normalized ~= defaultIcon and normalized ~= "INV_MISC_QUESTIONMARK"
-				and tostring(icon) ~= "134400" then
-				addIconButton(icon)
-				shown = shown + 1
-				if shown >= ICON_PICKER_PAGE then
-					break
-				end
-			end
-		end
-
-		local _, _, done = Compat.GetSpellIconCacheProgress()
-		if shown == 1 then
-			if done then
-				status:SetText("No matching spell icons found. Try another name or spell ID.")
-			else
-				status:SetText("Still indexing spell icons… results will update automatically.")
-			end
+		iconList = currentList()
+		local totalRows = math.max(1, math.ceil(#iconList / COLS))
+		local maxOffset = math.max(0, totalRows - ROWS)
+		scrollOffset = 0
+		scrollBar:SetMinMaxValues(0, maxOffset)
+		scrollBar:SetValue(0)
+		if maxOffset > 0 then
+			scrollBar:Show()
 		else
-			local suffix = done and "" or " (still indexing…)"
-			status:SetText(string.format("Showing %d result(s). Click an icon to use it.%s", shown, suffix))
+			scrollBar:Hide()
+		end
+		updateVisible()
+
+		if #iconList == 0 then
+			status:SetText("No matching icons. Try a spell name, spell ID, or texture name.")
+		else
+			status:SetText(string.format("%d icons — click one to use it.", #iconList))
 		end
 	end
 
-	onCacheUpdate = function()
-		if self.iconPickerFrame and filter:match("%S") then
-			refreshGrid()
-		end
-	end
-	Compat.RegisterSpellIconCacheListener(onCacheUpdate)
-	Compat.StartSpellIconCache()
+	scrollBar:SetScript("OnValueChanged", function(_, value)
+		scrollOffset = math.floor(value + 0.5)
+		updateVisible()
+	end)
+
+	buttonParent:SetScript("OnMouseWheel", function(_, delta)
+		local _, maxOffset = scrollBar:GetMinMaxValues()
+		scrollBar:SetValue(math.min(maxOffset, math.max(0, scrollOffset - delta)))
+	end)
 
 	frame:SetCallback("OnClose", function(widget)
-		if onCacheUpdate then
-			Compat.UnregisterSpellIconCacheListener(onCacheUpdate)
-		end
 		if self.iconPickerTimer then
 			addon():CancelTimer(self.iconPickerTimer)
 			self.iconPickerTimer = nil
 		end
+		destroyGrid()
 		AceGUI:Release(widget)
 		if self.iconPickerFrame == widget then
 			self.iconPickerFrame = nil

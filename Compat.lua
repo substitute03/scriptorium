@@ -222,7 +222,7 @@ function Compat.IsDisplayableIcon(tex)
 end
 
 ------------------------------------------------------------------------
--- Macro icon pool + spell-name index (icons selectable in Blizzard macros)
+-- Macro icon pool (same source as the Blizzard macro UI)
 ------------------------------------------------------------------------
 
 function Compat.CollectMacroIcons()
@@ -304,102 +304,8 @@ function Compat.IsMacroSelectableIcon(tex)
 	return false
 end
 
-function Compat.GetSpellIconCacheProgress()
-	return Compat._spellIconCacheNextId or 1, Compat._spellIconCacheMax or 1, Compat._spellIconCacheComplete and true or false
-end
-
-function Compat.RegisterSpellIconCacheListener(fn)
-	Compat._spellIconCacheListeners = Compat._spellIconCacheListeners or {}
-	Compat._spellIconCacheListeners[#Compat._spellIconCacheListeners + 1] = fn
-end
-
-function Compat.UnregisterSpellIconCacheListener(fn)
-	local list = Compat._spellIconCacheListeners
-	if not list then
-		return
-	end
-	for i = #list, 1, -1 do
-		if list[i] == fn then
-			table.remove(list, i)
-		end
-	end
-end
-
-local function notifySpellIconCacheListeners()
-	local list = Compat._spellIconCacheListeners
-	if not list then
-		return
-	end
-	for i = 1, #list do
-		local ok, err = pcall(list[i])
-		if not ok then
-			-- Keep indexing even if a listener errors.
-		end
-	end
-end
-
---- Background-index spell names → textures for names that map to macro-usable icons.
-function Compat.StartSpellIconCache()
-	Compat.CollectMacroIcons()
-	if Compat._spellIconCacheFrame or Compat._spellIconCacheComplete then
-		return
-	end
-
-	Compat._spellIconCache = Compat._spellIconCache or {} -- lowerName -> { tex, ... }
-	Compat._spellIconCacheNextId = Compat._spellIconCacheNextId or 1
-	-- High enough for current retail; invalid IDs are cheap skips.
-	Compat._spellIconCacheMax = 600000
-	local batch = 150
-	local notifyEvery = 2000
-
-	local frame = CreateFrame("Frame")
-	Compat._spellIconCacheFrame = frame
-	frame:SetScript("OnUpdate", function()
-		local cache = Compat._spellIconCache
-		local fromId = Compat._spellIconCacheNextId
-		local toId = math.min(fromId + batch - 1, Compat._spellIconCacheMax)
-
-		for id = fromId, toId do
-			local name = rawSpellName(id)
-			if name and name ~= "" then
-				local tex = rawSpellTexture(id)
-				-- Any spell texture CreateMacro can use (same pool the macro UI draws from).
-				if tex and type(tex) == "number" and tex >= 10000 then
-					local key = name:lower()
-					local bucket = cache[key]
-					if not bucket then
-						cache[key] = { tex }
-					else
-						local found = false
-						for i = 1, #bucket do
-							if bucket[i] == tex then
-								found = true
-								break
-							end
-						end
-						if not found then
-							bucket[#bucket + 1] = tex
-						end
-					end
-				end
-			end
-		end
-
-		Compat._spellIconCacheNextId = toId + 1
-		if Compat._spellIconCacheNextId % notifyEvery < batch then
-			notifySpellIconCacheListeners()
-		end
-
-		if Compat._spellIconCacheNextId > Compat._spellIconCacheMax then
-			frame:SetScript("OnUpdate", nil)
-			Compat._spellIconCacheFrame = nil
-			Compat._spellIconCacheComplete = true
-			notifySpellIconCacheListeners()
-		end
-	end)
-end
-
---- Resolve search text into displayable icon textures usable by macros.
+--- Instant icon search: direct spell/item lookup + filter the macro icon list.
+--- (No background spell-ID indexing.)
 function Compat.ResolveIconSearch(query)
 	local results = {}
 	local seen = {}
@@ -410,7 +316,6 @@ function Compat.ResolveIconSearch(query)
 		if seen[tex] then
 			return
 		end
-		-- Allow any displayable texture CreateMacro accepts (spell icons, macro list, paths).
 		seen[tex] = true
 		results[#results + 1] = tex
 	end
@@ -423,17 +328,15 @@ function Compat.ResolveIconSearch(query)
 		return results
 	end
 
-	Compat.CollectMacroIcons()
-	Compat.StartSpellIconCache()
-
+	local icons = Compat.CollectMacroIcons()
 	local id = tonumber(q)
 	local needle = q:lower()
-	local maxResults = 80
+	local maxResults = 200
 
+	-- Direct lookups (TMW-style: ask the game for this exact name/ID).
 	if id then
 		add(Compat.GetSpellTexture(id))
 		add(Compat.GetItemTexture(id))
-		-- FileDataID that is in the macro icon list.
 		if Compat._macroIconSet and Compat._macroIconSet[id] then
 			add(id)
 		end
@@ -441,7 +344,6 @@ function Compat.ResolveIconSearch(query)
 		add(Compat.GetSpellTexture(q))
 		add(Compat.GetItemTexture(q))
 
-		-- Common Blizzard icon filename guesses (e.g. stealth → Ability_Stealth).
 		local titled = titleCase(q):gsub("%s+", "_")
 		local rawUnderscore = q:gsub("%s+", "_")
 		local guesses = {
@@ -466,7 +368,6 @@ function Compat.ResolveIconSearch(query)
 		end
 	end
 
-	-- Explicit path.
 	if q:find("[/\\]") then
 		add(q)
 	elseif q:find("_") or needle:find("^inv") or needle:find("^spell") or needle:find("^ability") then
@@ -480,22 +381,19 @@ function Compat.ResolveIconSearch(query)
 		add(path)
 	end
 
-	-- Substring match against indexed spell names (global, not just your spellbook).
-	local cache = Compat._spellIconCache
-	if cache and not id then
-		for name, textures in pairs(cache) do
-			if name:find(needle, 1, true) then
-				for i = 1, #textures do
-					add(textures[i])
-					if #results >= maxResults then
-						return results
-					end
-				end
+	-- Filter Blizzard's macro icon pool by texture path / id string.
+	for i = 1, #icons do
+		local icon = icons[i]
+		local hay = tostring(icon):lower()
+		if hay:find(needle, 1, true) then
+			add(icon)
+			if #results >= maxResults then
+				return results
 			end
 		end
 	end
 
-	-- Still check the player's spellbook (fast, available immediately).
+	-- Player spellbook name matches (fast, no global index).
 	if not id then
 		local function consider(name, texture, spellID)
 			if not name or not name:lower():find(needle, 1, true) then
