@@ -1327,6 +1327,21 @@ function UI:ShowMacroScopeDialog(callback)
 	frame:AddChild(charBtn)
 end
 
+function UI:ClearSearch()
+	self.searchQuery = ""
+	if self.searchTimer then
+		addon():CancelTimer(self.searchTimer)
+		self.searchTimer = nil
+	end
+	if self.searchEdit then
+		self.searchEdit:SetText("")
+		if self.searchClearButton then
+			self.searchClearButton:Hide()
+		end
+	end
+	self:RefreshList()
+end
+
 function UI:ToggleSortMode()
 	local mode = Data:GetSortMode()
 	if mode == "name" then
@@ -1395,6 +1410,7 @@ function UI:CreateWindow()
 		self.iconWidget = nil
 		self.saveButton = nil
 		self.searchEdit = nil
+		self.searchClearButton = nil
 		self.sortButton = nil
 	end)
 	self.frame = frame
@@ -1408,12 +1424,20 @@ function UI:CreateWindow()
 	local search = AceGUI:Create("EditBox")
 	search:SetLabel("Search")
 	search:SetWidth(260)
+	search:DisableButton(true)
 	search:SetCallback("OnEnterPressed", function(widget, event, text)
 		self.searchQuery = text or ""
 		self:RefreshList()
 	end)
 	search:SetCallback("OnTextChanged", function(widget, event, text)
 		self.searchQuery = text or ""
+		if self.searchClearButton then
+			if self.searchQuery ~= "" then
+				self.searchClearButton:Show()
+			else
+				self.searchClearButton:Hide()
+			end
+		end
 		-- Live search with light debounce via timer.
 		if self.searchTimer then
 			addon():CancelTimer(self.searchTimer)
@@ -1424,6 +1448,27 @@ function UI:CreateWindow()
 	end)
 	toolbar:AddChild(search)
 	self.searchEdit = search
+
+	-- Clear button inside the search box.
+	local clearBtn = CreateFrame("Button", nil, search.editbox)
+	clearBtn:SetSize(16, 16)
+	clearBtn:SetPoint("RIGHT", search.editbox, "RIGHT", -4, 0)
+	clearBtn:SetNormalTexture("Interface\\Buttons\\UI-StopButton")
+	clearBtn:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+	clearBtn:SetScript("OnEnter", function(btn)
+		GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Clear search")
+		GameTooltip:Show()
+	end)
+	clearBtn:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+	clearBtn:SetScript("OnClick", function()
+		self:ClearSearch()
+	end)
+	clearBtn:Hide()
+	self.searchClearButton = clearBtn
+	search.editbox:SetTextInsets(0, 20, 3, 3)
 
 	-- Body: TreeGroup provides left tree; content holds list + detail.
 	local body = AceGUI:Create("SimpleGroup")
