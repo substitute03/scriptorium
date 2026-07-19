@@ -1274,6 +1274,9 @@ function UI:ShowFolderContextMenu(owner, folderId)
 			local addEntryBtn = rootDescription:CreateButton("Add Entry", function()
 				self:CreateEntry(folderId)
 			end)
+			rootDescription:CreateButton("Create Blizzard Macros From Folder", function()
+				self:CreateBlizzardMacrosFromFolder(folderId)
+			end)
 			local renameBtn = rootDescription:CreateButton("Rename Folder", function()
 				self:RenameSelectedFolder(folderId)
 			end)
@@ -1321,6 +1324,14 @@ function UI:ShowFolderContextMenu(owner, folderId)
 		info.disabled = isRoot
 		info.func = function()
 			self:CreateEntry(folderId)
+		end
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Create Blizzard Macros From Folder"
+		info.notCheckable = true
+		info.func = function()
+			self:CreateBlizzardMacrosFromFolder(folderId)
 		end
 		UIDropDownMenu_AddButton(info, level)
 
@@ -1837,6 +1848,49 @@ function UI:CreateBlizzardMacro(entryId)
 	end)
 end
 
+function UI:CreateBlizzardMacrosFromFolder(folderId)
+	local folder = Data:GetFolder(folderId)
+	if not folder then
+		return
+	end
+	-- Save first if dirty so macros use latest text for the open entry.
+	if self:IsDirty() then
+		if not self:SaveCurrentEntry() then
+			return
+		end
+	end
+	self:ShowFolderMacroScopeDialog(function(perCharacter, includeChildren)
+		local entries = Data:CollectEntries(folderId, includeChildren)
+		if #entries == 0 then
+			local message = "No entries found in this folder."
+			addon():Notify(message, true)
+			self:SetStatus(message)
+			return
+		end
+		local created, failed = 0, 0
+		local lastError
+		for _, entry in ipairs(entries) do
+			local ok, message = MacroBridge:CreateFromEntry(entry, perCharacter)
+			if ok then
+				created = created + 1
+			else
+				failed = failed + 1
+				lastError = message
+			end
+		end
+		local message
+		if failed == 0 then
+			message = string.format("Created %d macro%s from folder.", created, created == 1 and "" or "s")
+		elseif created == 0 then
+			message = lastError or "Failed to create macros."
+		else
+			message = string.format("Created %d macro%s (%d failed).", created, created == 1 and "" or "s", failed)
+		end
+		addon():Notify(message, created == 0)
+		self:SetStatus(message)
+	end)
+end
+
 function UI:ShowMacroScopeDialog(callback)
 	if self.scopeFrame then
 		AceGUI:Release(self.scopeFrame)
@@ -1887,6 +1941,75 @@ function UI:ShowMacroScopeDialog(callback)
 		AceGUI:Release(frame)
 		self.scopeFrame = nil
 		callback(true)
+	end)
+	frame:AddChild(charBtn)
+end
+
+function UI:ShowFolderMacroScopeDialog(callback)
+	if self.scopeFrame then
+		AceGUI:Release(self.scopeFrame)
+		self.scopeFrame = nil
+	end
+	local frame = AceGUI:Create("Window")
+	frame:SetTitle("Create Blizzard Macros")
+	frame:SetLayout("List")
+	frame:SetWidth(360)
+	frame:SetHeight(200)
+	frame:EnableResize(false)
+	frame:SetCallback("OnClose", function(widget)
+		AceGUI:Release(widget)
+		if self.scopeFrame == widget then
+			self.scopeFrame = nil
+		end
+	end)
+	self.scopeFrame = frame
+
+	if frame.frame then
+		Compat.RaiseFrame(frame.frame)
+	end
+
+	local label = AceGUI:Create("Label")
+	label:SetFullWidth(true)
+	label:SetText("Create Blizzard macros for all folder contents.")
+	frame:AddChild(label)
+
+	local spacer = AceGUI:Create("Label")
+	spacer:SetFullWidth(true)
+	spacer:SetText(" ")
+	spacer:SetHeight(8)
+	frame:AddChild(spacer)
+
+	local includeChildren = AceGUI:Create("CheckBox")
+	includeChildren:SetLabel("Include entries in child folders")
+	includeChildren:SetFullWidth(true)
+	includeChildren:SetValue(false)
+	frame:AddChild(includeChildren)
+
+	local spacer2 = AceGUI:Create("Label")
+	spacer2:SetFullWidth(true)
+	spacer2:SetText(" ")
+	spacer2:SetHeight(8)
+	frame:AddChild(spacer2)
+
+	local globalBtn = AceGUI:Create("Button")
+	globalBtn:SetText("Global Macros")
+	globalBtn:SetFullWidth(true)
+	globalBtn:SetCallback("OnClick", function()
+		local include = includeChildren:GetValue() and true or false
+		AceGUI:Release(frame)
+		self.scopeFrame = nil
+		callback(false, include)
+	end)
+	frame:AddChild(globalBtn)
+
+	local charBtn = AceGUI:Create("Button")
+	charBtn:SetText("Character Macros")
+	charBtn:SetFullWidth(true)
+	charBtn:SetCallback("OnClick", function()
+		local include = includeChildren:GetValue() and true or false
+		AceGUI:Release(frame)
+		self.scopeFrame = nil
+		callback(true, include)
 	end)
 	frame:AddChild(charBtn)
 end

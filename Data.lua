@@ -324,6 +324,32 @@ function Data:GetEntryPath(entryId)
 	return self:GetFolderPath(entry.parentId)
 end
 
+--- Collect entries in a folder, optionally walking child folders depth-first.
+function Data:CollectEntries(folderId, includeChildren)
+	local results = {}
+	local function walk(id)
+		local folder = self:GetFolder(id)
+		if not folder then
+			return
+		end
+		if id ~= self:GetRootId() then
+			for _, entryId in ipairs(folder.entries) do
+				local entry = self:GetEntry(entryId)
+				if entry then
+					results[#results + 1] = entry
+				end
+			end
+		end
+		if includeChildren then
+			for _, childId in ipairs(folder.children) do
+				walk(childId)
+			end
+		end
+	end
+	walk(folderId)
+	return results
+end
+
 function Data:GetSortedChildren(folderId)
 	local folder = self:GetFolder(folderId)
 	if not folder then
