@@ -192,13 +192,30 @@ function UI:RefreshTree()
 	self:DecorateTreeAddButtons()
 end
 
---- Add a "+" control on each visible folder row to create a child folder,
---- and wire right-click context menus for rename/delete.
+--- Toggle expand/collapse for a tree path, remembering user intent.
+function UI:ToggleFolderExpanded(uniquevalue)
+	if not uniquevalue or not self.treeGroup then
+		return
+	end
+	local status = (self.treeGroup.status or self.treeGroup.localstatus).groups
+	local nowExpanded = not status[uniquevalue]
+	status[uniquevalue] = nowExpanded or nil
+	self._userCollapsed = self._userCollapsed or {}
+	if nowExpanded then
+		self._userCollapsed[uniquevalue] = nil
+	else
+		self._userCollapsed[uniquevalue] = true
+	end
+	self.treeGroup:RefreshTree()
+end
+
+--- Add "+" / chevron controls and right-click menus on folder tree rows.
 function UI:DecorateTreeAddButtons()
 	local tree = self.treeGroup
 	if not tree or not tree.buttons then
 		return
 	end
+	local groupstatus = (tree.status or tree.localstatus).groups
 	for _, button in ipairs(tree.buttons) do
 		if button:IsShown() and button.value and not button._scriptoriumMenuHooked then
 			button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -225,11 +242,21 @@ function UI:DecorateTreeAddButtons()
 					origOnClick(btn, mouseButton, ...)
 				end
 			end)
+			-- Expand/collapse is via the chevron only (single click).
+			button:SetScript("OnDoubleClick", nil)
 			button._scriptoriumMenuHooked = true
 		end
 
-		local addBtn = button._scriptoriumAdd
-		if button:IsShown() and button.value then
+			-- Hide AceGUI's built-in toggle; we draw our own chevron before the label.
+			if button.toggle then
+				button.toggle:Hide()
+				button.toggle:EnableMouse(false)
+			end
+
+			local addBtn = button._scriptoriumAdd
+			local chevron = button._scriptoriumChevronBtn
+
+			if button:IsShown() and button.value then
 			if not addBtn then
 				addBtn = CreateFrame("Button", nil, button)
 				addBtn:SetSize(16, 16)
@@ -257,11 +284,65 @@ function UI:DecorateTreeAddButtons()
 			end
 			addBtn.folderId = button.value
 			addBtn:Show()
-			if button.text then
-				button.text:SetPoint("RIGHT", addBtn, "LEFT", -4, 2)
+
+			local level = button.level or 1
+			local hasIcon = button.icon and button.icon:GetTexture()
+			local left = (hasIcon and 16 or 0) + (level == 1 and 8 or (8 * level))
+			local hasChildren = button.treeline and button.treeline.hasChildren
+
+			if hasChildren then
+				if not chevron then
+					chevron = CreateFrame("Button", nil, button)
+					chevron:SetSize(18, 18)
+					chevron:SetFrameLevel(button:GetFrameLevel() + 6)
+					chevron:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
+					chevron:SetScript("OnClick", function(btn)
+						if btn.uniquevalue then
+							self:ToggleFolderExpanded(btn.uniquevalue)
+						end
+					end)
+					button._scriptoriumChevronBtn = chevron
+				end
+				chevron.uniquevalue = button.uniquevalue
+				chevron:SetSize(18, 18)
+				local expanded = groupstatus and groupstatus[button.uniquevalue]
+				chevron:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up")
+				chevron:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down")
+				local rotation = expanded and math.rad(-90) or 0
+				local normal = chevron:GetNormalTexture()
+				if normal and normal.SetRotation then
+					normal:SetRotation(rotation)
+				end
+				local pushed = chevron:GetPushedTexture()
+				if pushed and pushed.SetRotation then
+					pushed:SetRotation(rotation)
+				end
+				chevron:ClearAllPoints()
+				chevron:SetPoint("LEFT", button, "LEFT", left, 0)
+				chevron:Show()
+
+				if button.text then
+					button.text:ClearAllPoints()
+					button.text:SetPoint("LEFT", chevron, "RIGHT", 2, 2)
+					button.text:SetJustifyH("LEFT")
+				end
+			else
+				if chevron then
+					chevron:Hide()
+				end
+				if button.text then
+					button.text:ClearAllPoints()
+					button.text:SetPoint("LEFT", left, 2)
+					button.text:SetJustifyH("LEFT")
+				end
 			end
-		elseif addBtn then
-			addBtn:Hide()
+		else
+			if addBtn then
+				addBtn:Hide()
+			end
+			if chevron then
+				chevron:Hide()
+			end
 		end
 	end
 end
@@ -279,8 +360,16 @@ function UI:RefreshTreeSelection()
 		id = folder and folder.parentId
 	end
 	local unique = table.concat(pathParts, "\001")
+
 	self._ignoreTreeSelect = true
+	-- SelectByValue expands the whole path (needed so the selection is visible).
 	self.treeGroup:SelectByValue(unique)
+	-- SelectByValue also forces the selected node open; restore a user collapse.
+	local status = self.treeGroup.status or self.treeGroup.localstatus
+	if status and status.groups and self._userCollapsed and self._userCollapsed[unique] then
+		status.groups[unique] = nil
+		self.treeGroup:RefreshTree(true)
+	end
 	self._ignoreTreeSelect = false
 end
 
@@ -621,6 +710,9 @@ function UI:CreateFolder(parentId)
 					walk = folder and folder.parentId
 				end
 				status.groups[table.concat(pathParts, "\001")] = true
+				if self._userCollapsed then
+					self._userCollapsed[table.concat(pathParts, "\001")] = nil
+				end
 			end
 		end
 		self:SelectFolder(parentId, true)
