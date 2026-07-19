@@ -365,9 +365,15 @@ function Data:BuildTree()
 		if not folder then
 			return nil
 		end
+		local entryCount = 0
+		for _, entryId in ipairs(folder.entries) do
+			if self:GetEntry(entryId) then
+				entryCount = entryCount + 1
+			end
+		end
 		local node = {
 			value = folderId,
-			text = folder.name,
+			text = string.format("%s (%d)", folder.name, entryCount),
 		}
 		if #folder.children > 0 then
 			node.children = {}
