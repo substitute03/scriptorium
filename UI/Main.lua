@@ -200,11 +200,11 @@ function UI:ToggleFolderExpanded(uniquevalue)
 	local status = (self.treeGroup.status or self.treeGroup.localstatus).groups
 	local nowExpanded = not status[uniquevalue]
 	status[uniquevalue] = nowExpanded or nil
-	self._userCollapsed = self._userCollapsed or {}
+	self._userExpanded = self._userExpanded or {}
 	if nowExpanded then
-		self._userCollapsed[uniquevalue] = nil
+		self._userExpanded[uniquevalue] = true
 	else
-		self._userCollapsed[uniquevalue] = true
+		self._userExpanded[uniquevalue] = nil
 	end
 	self.treeGroup:RefreshTree()
 end
@@ -360,16 +360,26 @@ function UI:RefreshTreeSelection()
 		id = folder and folder.parentId
 	end
 	local unique = table.concat(pathParts, "\001")
+	local status = self.treeGroup.status or self.treeGroup.localstatus
+	if not status then
+		return
+	end
+	status.groups = status.groups or {}
+
+	-- Expand ancestors so the selection stays visible. Never auto-expand the
+	-- selected folder itself — that is chevron-only via _userExpanded.
+	for i = 1, #pathParts - 1 do
+		status.groups[table.concat(pathParts, "\001", 1, i)] = true
+	end
+	if self._userExpanded and self._userExpanded[unique] then
+		status.groups[unique] = true
+	else
+		status.groups[unique] = nil
+	end
+	status.selected = unique
 
 	self._ignoreTreeSelect = true
-	-- SelectByValue expands the whole path (needed so the selection is visible).
-	self.treeGroup:SelectByValue(unique)
-	-- SelectByValue also forces the selected node open; restore a user collapse.
-	local status = self.treeGroup.status or self.treeGroup.localstatus
-	if status and status.groups and self._userCollapsed and self._userCollapsed[unique] then
-		status.groups[unique] = nil
-		self.treeGroup:RefreshTree(true)
-	end
+	self.treeGroup:RefreshTree(true)
 	self._ignoreTreeSelect = false
 end
 
@@ -710,9 +720,8 @@ function UI:CreateFolder(parentId)
 					walk = folder and folder.parentId
 				end
 				status.groups[table.concat(pathParts, "\001")] = true
-				if self._userCollapsed then
-					self._userCollapsed[table.concat(pathParts, "\001")] = nil
-				end
+				self._userExpanded = self._userExpanded or {}
+				self._userExpanded[table.concat(pathParts, "\001")] = true
 			end
 		end
 		self:SelectFolder(parentId, true)
