@@ -289,11 +289,13 @@ function UI:DecorateTreeAddButtons()
 			local hasIcon = button.icon and button.icon:GetTexture()
 			local left = (hasIcon and 16 or 0) + (level == 1 and 8 or (8 * level))
 			local hasChildren = button.treeline and button.treeline.hasChildren
+			local chevronSize = 18
+			local chevronGap = 2
 
 			if hasChildren then
 				if not chevron then
 					chevron = CreateFrame("Button", nil, button)
-					chevron:SetSize(18, 18)
+					chevron:SetSize(chevronSize, chevronSize)
 					chevron:SetFrameLevel(button:GetFrameLevel() + 6)
 					chevron:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight")
 					chevron:SetScript("OnClick", function(btn)
@@ -304,7 +306,7 @@ function UI:DecorateTreeAddButtons()
 					button._scriptoriumChevronBtn = chevron
 				end
 				chevron.uniquevalue = button.uniquevalue
-				chevron:SetSize(18, 18)
+				chevron:SetSize(chevronSize, chevronSize)
 				local expanded = groupstatus and groupstatus[button.uniquevalue]
 				chevron:SetNormalTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up")
 				chevron:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down")
@@ -323,16 +325,17 @@ function UI:DecorateTreeAddButtons()
 
 				if button.text then
 					button.text:ClearAllPoints()
-					button.text:SetPoint("LEFT", chevron, "RIGHT", 2, 2)
+					button.text:SetPoint("LEFT", chevron, "RIGHT", chevronGap, 2)
 					button.text:SetJustifyH("LEFT")
 				end
 			else
 				if chevron then
 					chevron:Hide()
 				end
+				-- Indent by chevron width so leaf labels align with parent folder names.
 				if button.text then
 					button.text:ClearAllPoints()
-					button.text:SetPoint("LEFT", left, 2)
+					button.text:SetPoint("LEFT", left + chevronSize + chevronGap, 2)
 					button.text:SetJustifyH("LEFT")
 				end
 			end
