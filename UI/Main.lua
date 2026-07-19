@@ -628,22 +628,61 @@ function UI:PopulateSearchResults(query)
 		return
 	end
 
+	-- Group matches by folder so the breadcrumb is a section title, not repeated per row.
+	local groups = {}
+	local order = {}
 	for _, result in ipairs(results) do
 		local entry = result.entry
-		local label = string.format("%s\n|cffaaaaaa%s|r", entry.name, result.path)
-		self:AddListRow({
-			kind = "entry",
-			id = entry.id,
-			label = label,
-			height = 36,
-			selected = (entry.id == self.selectedEntryId),
-			onClick = function()
-				self:SelectEntry(entry.id)
-			end,
-			onDouble = function()
-				self:SelectEntry(entry.id)
-			end,
-		})
+		local parentId = entry.parentId or ""
+		local group = groups[parentId]
+		if not group then
+			group = {
+				path = result.path or Data:GetFolderPath(parentId) or "",
+				entries = {},
+			}
+			groups[parentId] = group
+			order[#order + 1] = parentId
+		end
+		group.entries[#group.entries + 1] = entry
+	end
+
+	table.sort(order, function(a, b)
+		return (groups[a].path or ""):lower() < (groups[b].path or ""):lower()
+	end)
+
+	for i, parentId in ipairs(order) do
+		local group = groups[parentId]
+		if i > 1 then
+			local spacer = AceGUI:Create("Label")
+			spacer:SetFullWidth(true)
+			spacer:SetText(" ")
+			spacer:SetHeight(8)
+			self.listGroup:AddChild(spacer)
+		end
+
+		local pathLabel = AceGUI:Create("Label")
+		pathLabel:SetFullWidth(true)
+		pathLabel:SetText("|cffffd100" .. group.path .. "|r")
+		self.listGroup:AddChild(pathLabel)
+
+		table.sort(group.entries, function(a, b)
+			return a.name:lower() < b.name:lower()
+		end)
+
+		for _, entry in ipairs(group.entries) do
+			self:AddListRow({
+				kind = "entry",
+				id = entry.id,
+				label = entry.name,
+				selected = (entry.id == self.selectedEntryId),
+				onClick = function()
+					self:SelectEntry(entry.id)
+				end,
+				onDouble = function()
+					self:SelectEntry(entry.id)
+				end,
+			})
+		end
 	end
 end
 
