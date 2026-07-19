@@ -23,7 +23,7 @@ function Scriptorium:OnInitialize()
 	Data:Init(self.db)
 
 	self:RegisterChatCommand("scriptorium", "SlashCommand")
-	self:RegisterChatCommand("script", "SlashCommand")
+	self:RegisterChatCommand("scr", "SlashCommand")
 
 	self:RegisterPopupDialogs()
 end
@@ -37,7 +37,7 @@ function Scriptorium:SlashCommand(input)
 	if input == "help" then
 		self:Print("Commands:")
 		self:Print("  /scriptorium — toggle the repository window")
-		self:Print("  /script — same as /scriptorium")
+		self:Print("  /scr — same as /scriptorium")
 		return
 	end
 	if ns.UI and ns.UI.Toggle then

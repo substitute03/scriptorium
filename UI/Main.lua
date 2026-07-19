@@ -209,6 +209,118 @@ function UI:ToggleFolderExpanded(uniquevalue)
 	self.treeGroup:RefreshTree()
 end
 
+--- Resolve the tree folder button currently under the mouse (walks parents).
+function UI:GetFolderButtonUnderMouse()
+	local frames
+	if GetMouseFoci then
+		frames = GetMouseFoci()
+	elseif GetMouseFocus then
+		local focus = GetMouseFocus()
+		frames = focus and { focus } or {}
+	else
+		return nil
+	end
+	for i = 1, #frames do
+		local frame = frames[i]
+		while frame do
+			if frame.value and frame.obj == self.treeGroup then
+				return frame
+			end
+			frame = frame.GetParent and frame:GetParent() or nil
+		end
+	end
+	return nil
+end
+
+--- Finish a folder drag onto destFolderId (may be nil if dropped nowhere useful).
+function UI:CompleteFolderDrag(destFolderId)
+	local srcId = self._draggingFolderId
+	self._draggingFolderId = nil
+	if ResetCursor then
+		ResetCursor()
+	end
+	if self._dragHighlightBtn then
+		self._dragHighlightBtn:UnlockHighlight()
+		self._dragHighlightBtn = nil
+	end
+	if not srcId or not destFolderId or srcId == destFolderId then
+		return
+	end
+	local src = Data:GetFolder(srcId)
+	if not src or src.parentId == destFolderId then
+		return
+	end
+	local ok, err = Data:MoveFolder(srcId, destFolderId)
+	if not ok then
+		addon():Notify(err, true)
+		return
+	end
+	-- Paths changed; rebuild expand state so the destination stays open.
+	self._userExpanded = {}
+	local pathParts = {}
+	local walk = destFolderId
+	while walk do
+		table.insert(pathParts, 1, walk)
+		local folder = Data:GetFolder(walk)
+		walk = folder and folder.parentId
+	end
+	for i = 1, #pathParts do
+		self._userExpanded[table.concat(pathParts, "\001", 1, i)] = true
+	end
+	self:SelectFolder(srcId, true)
+	self:RefreshAll()
+	self:SetStatus("Folder moved.")
+end
+
+--- Enable click-and-drag to move a folder into another folder.
+function UI:SetupFolderRowDrag(button)
+	if button._scriptoriumDragHooked then
+		return
+	end
+	button:RegisterForDrag("LeftButton")
+	button:SetScript("OnDragStart", function(btn)
+		if not btn.value or btn.value == Data:GetRootId() then
+			return
+		end
+		self._draggingFolderId = btn.value
+		-- Prefer a built-in cursor token; fall back silently if unavailable.
+		if SetCursor then
+			pcall(SetCursor, "Interface\\Cursor\\UI-Cursor-Move")
+		end
+	end)
+	button:SetScript("OnDragStop", function()
+		if not self._draggingFolderId then
+			return
+		end
+		local destBtn = self:GetFolderButtonUnderMouse()
+		self:CompleteFolderDrag(destBtn and destBtn.value)
+	end)
+	local origOnEnter = button:GetScript("OnEnter")
+	button:SetScript("OnEnter", function(btn, ...)
+		if origOnEnter then
+			origOnEnter(btn, ...)
+		end
+		if self._draggingFolderId and btn.value and btn.value ~= self._draggingFolderId then
+			if self._dragHighlightBtn and self._dragHighlightBtn ~= btn then
+				self._dragHighlightBtn:UnlockHighlight()
+			end
+			btn:LockHighlight()
+			self._dragHighlightBtn = btn
+		end
+	end)
+	local origOnLeave = button:GetScript("OnLeave")
+	button:SetScript("OnLeave", function(btn, ...)
+		if self._dragHighlightBtn == btn then
+			btn:UnlockHighlight()
+			self._dragHighlightBtn = nil
+		end
+		if origOnLeave then
+			origOnLeave(btn, ...)
+		end
+	end)
+	button._scriptoriumDragHooked = true
+end
+
 --- Add "+" / chevron controls and right-click menus on folder tree rows.
 function UI:DecorateTreeAddButtons()
 	local tree = self.treeGroup
@@ -245,6 +357,10 @@ function UI:DecorateTreeAddButtons()
 			-- Expand/collapse is via the chevron only (single click).
 			button:SetScript("OnDoubleClick", nil)
 			button._scriptoriumMenuHooked = true
+		end
+
+		if button:IsShown() and button.value then
+			self:SetupFolderRowDrag(button)
 		end
 
 			-- Hide AceGUI's built-in toggle; we draw our own chevron before the label.
