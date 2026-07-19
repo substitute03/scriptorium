@@ -598,12 +598,11 @@ function UI:RefreshList()
 	end
 
 	for _, entry in ipairs(entries) do
-		local selected = (entry.id == self.selectedEntryId)
-		local prefix = selected and "|cff00ff00>|r " or ""
 		self:AddListRow({
 			kind = "entry",
 			id = entry.id,
-			label = prefix .. entry.name,
+			label = entry.name,
+			selected = (entry.id == self.selectedEntryId),
 			onClick = function()
 				self:SelectEntry(entry.id)
 			end,
@@ -631,14 +630,13 @@ function UI:PopulateSearchResults(query)
 
 	for _, result in ipairs(results) do
 		local entry = result.entry
-		local selected = (entry.id == self.selectedEntryId)
-		local prefix = selected and "|cff00ff00>|r " or ""
-		local label = string.format("%s%s\n|cffaaaaaa%s|r", prefix, entry.name, result.path)
+		local label = string.format("%s\n|cffaaaaaa%s|r", entry.name, result.path)
 		self:AddListRow({
 			kind = "entry",
 			id = entry.id,
 			label = label,
 			height = 36,
+			selected = (entry.id == self.selectedEntryId),
 			onClick = function()
 				self:SelectEntry(entry.id)
 			end,
@@ -650,14 +648,53 @@ function UI:PopulateSearchResults(query)
 end
 
 function UI:AddListRow(info)
-	local btn = AceGUI:Create("InteractiveLabel")
-	btn:SetFullWidth(true)
-	btn:SetText(info.label)
-	if info.height then
-		btn:SetHeight(info.height)
+	local height = info.height or 18
+
+	-- Use the same button template as the folder tree so selection highlight matches.
+	-- Keep the native button on a short-lived AceGUI holder and detach it on release
+	-- so AceGUI pooling cannot leak row chrome into other SimpleGroups.
+	local holder = AceGUI:Create("SimpleGroup")
+	holder:SetFullWidth(true)
+	holder:SetHeight(height)
+	holder:SetLayout("Fill")
+	self.listGroup:AddChild(holder)
+
+	self._listRowButtonPool = self._listRowButtonPool or {}
+	local btn = table.remove(self._listRowButtonPool)
+	if not btn then
+		btn = CreateFrame("Button", nil, holder.frame, "OptionsListButtonTemplate")
+		btn:SetPushedTextOffset(0, 0)
+		btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+		if btn.toggle then
+			btn.toggle:Hide()
+			btn.toggle:Disable()
+		end
+	else
+		btn:SetParent(holder.frame)
 	end
-    btn:SetFontObject(GameFontHighlight)
-	btn:SetCallback("OnClick", function(_, _, button)
+	btn:ClearAllPoints()
+	btn:SetAllPoints(holder.frame)
+	btn:SetText(info.label or "")
+	local fs = btn:GetFontString()
+	if fs then
+		fs:ClearAllPoints()
+		fs:SetPoint("LEFT", 8, 0)
+		fs:SetPoint("RIGHT", -8, 0)
+		fs:SetJustifyH("LEFT")
+		fs:SetWordWrap(height > 20)
+	end
+	-- Same fonts as nested tree rows.
+	btn:SetNormalFontObject(GameFontHighlightSmall)
+	btn:SetHighlightFontObject(GameFontHighlightSmall)
+	if info.selected then
+		btn:LockHighlight()
+	else
+		btn:UnlockHighlight()
+	end
+	btn:Show()
+	holder._scrRowBtn = btn
+
+	btn:SetScript("OnClick", function(_, button)
 		if button == "LeftButton" then
 			local now = GetTime()
 			if btn._lastClick and (now - btn._lastClick) < 0.35 and info.onDouble then
@@ -670,10 +707,26 @@ function UI:AddListRow(info)
 				end
 			end
 		elseif button == "RightButton" then
-			self:ShowListContextMenu(btn.frame, info)
+			self:ShowListContextMenu(btn, info)
 		end
 	end)
-	self.listGroup:AddChild(btn)
+
+	local prevRelease = holder.OnRelease
+	holder.OnRelease = function(widget)
+		local rowBtn = widget._scrRowBtn
+		if rowBtn then
+			rowBtn:SetScript("OnClick", nil)
+			rowBtn:UnlockHighlight()
+			rowBtn:Hide()
+			rowBtn:SetParent(nil)
+			widget._scrRowBtn = nil
+			self._listRowButtonPool[#self._listRowButtonPool + 1] = rowBtn
+		end
+		widget.OnRelease = prevRelease
+		if prevRelease then
+			prevRelease(widget)
+		end
+	end
 end
 
 function UI:RefreshDetailEnabled()
