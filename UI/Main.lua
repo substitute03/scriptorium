@@ -1159,21 +1159,6 @@ function UI:CreateWindow()
 	toolbar:AddChild(search)
 	self.searchEdit = search
 
-	local function toolButton(text, width, onClick)
-		local b = AceGUI:Create("Button")
-		b:SetText(text)
-		b:SetWidth(width or 100)
-		b:SetCallback("OnClick", onClick)
-		toolbar:AddChild(b)
-		return b
-	end
-
-	self.sortButton = toolButton(
-		Data:GetSortMode() == "name" and "Sort: Name" or "Sort: Modified",
-		120,
-		function() self:ToggleSortMode() end
-	)
-
 	-- Body: TreeGroup provides left tree; content holds list + detail.
 	local body = AceGUI:Create("SimpleGroup")
 	body:SetFullWidth(true)
@@ -1225,6 +1210,21 @@ function UI:CreateWindow()
 	listContainer:SetAutoAdjustHeight(false)
 	listContainer:SetLayout("Fill")
 	content:AddChild(listContainer)
+
+	-- Place sort control beside the "Contents" title text.
+	listContainer.titletext:ClearAllPoints()
+	listContainer.titletext:SetPoint("TOPLEFT", 14, 0)
+	listContainer.titletext:SetJustifyH("LEFT")
+	listContainer.titletext:SetHeight(18)
+
+	local sortBtn = CreateFrame("Button", nil, listContainer.frame, "UIPanelButtonTemplate")
+	sortBtn:SetSize(110, 18)
+	sortBtn:SetPoint("LEFT", listContainer.titletext, "RIGHT", 8, 0)
+	sortBtn:SetText(Data:GetSortMode() == "name" and "Sort: Name" or "Sort: Modified")
+	sortBtn:SetScript("OnClick", function()
+		self:ToggleSortMode()
+	end)
+	self.sortButton = sortBtn
 
 	local listScroll = AceGUI:Create("ScrollFrame")
 	listScroll:SetLayout("List")
