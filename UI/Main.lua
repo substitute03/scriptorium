@@ -355,21 +355,37 @@ function UI:DecorateTreeAddButtons()
 				if origOnClick then
 					origOnClick(btn, mouseButton, ...)
 				end
+				-- Row clicks select only; never keep the clicked folder expanded
+				-- unless the user opened it with the chevron.
+				if btn.uniquevalue then
+					self:RefreshTreeSelection()
+				end
 			end)
-			-- Expand/collapse is via the chevron only (single click).
-			button:SetScript("OnDoubleClick", nil)
+			-- Expand/collapse is via the chevron only.
+			button:SetScript("OnDoubleClick", function() end)
 			button._scriptoriumMenuHooked = true
+		end
+
+		-- Keep double-click disabled even on already-hooked rows.
+		if button:IsShown() then
+			button:SetScript("OnDoubleClick", function() end)
 		end
 
 		if button:IsShown() and button.value then
 			self:SetupFolderRowDrag(button)
+			-- OptionsListButtonTemplate shifts the label while pressed; keep it still.
+			if button.SetPushedTextOffset then
+				button:SetPushedTextOffset(0, 0)
+			end
 		end
 
-			-- Hide AceGUI's built-in toggle; we draw our own chevron before the label.
-			if button.toggle then
-				button.toggle:Hide()
-				button.toggle:EnableMouse(false)
-			end
+		-- Fully disable AceGUI's built-in expand toggle (we use our own chevron).
+		if button.toggle then
+			button.toggle:SetScript("OnClick", nil)
+			button.toggle:EnableMouse(false)
+			button.toggle:Hide()
+			button.toggle:SetAlpha(0)
+		end
 
 			local addBtn = button._scriptoriumAdd
 			local chevron = button._scriptoriumChevronBtn
@@ -410,6 +426,14 @@ function UI:DecorateTreeAddButtons()
 			local chevronSize = 18
 			local chevronGap = 2
 
+			-- Keep one font for normal + highlight so LockHighlight does not nudge glyphs.
+			local font = (level == 1) and GameFontNormal or GameFontHighlightSmall
+			button:SetNormalFontObject(font)
+			button:SetHighlightFontObject(font)
+			if button.text and button.text.SetFontObject then
+				button.text:SetFontObject(font)
+			end
+
 			if hasChildren then
 				if not chevron then
 					chevron = CreateFrame("Button", nil, button)
@@ -443,8 +467,10 @@ function UI:DecorateTreeAddButtons()
 
 				if button.text then
 					button.text:ClearAllPoints()
-					button.text:SetPoint("LEFT", chevron, "RIGHT", chevronGap, 2)
+					-- Anchor to the button (not chevron) so highlight/lock cannot shift the label.
+					button.text:SetPoint("LEFT", button, "LEFT", left + chevronSize + chevronGap, 0)
 					button.text:SetJustifyH("LEFT")
+					button.text:SetJustifyV("MIDDLE")
 				end
 			else
 				if chevron then
@@ -453,8 +479,9 @@ function UI:DecorateTreeAddButtons()
 				-- Indent by chevron width so leaf labels align with parent folder names.
 				if button.text then
 					button.text:ClearAllPoints()
-					button.text:SetPoint("LEFT", left + chevronSize + chevronGap, 2)
+					button.text:SetPoint("LEFT", button, "LEFT", left + chevronSize + chevronGap, 0)
 					button.text:SetJustifyH("LEFT")
+					button.text:SetJustifyV("MIDDLE")
 				end
 			end
 		else
@@ -487,15 +514,18 @@ function UI:RefreshTreeSelection()
 	end
 	status.groups = status.groups or {}
 
-	-- Expand ancestors so the selection stays visible. Never auto-expand the
-	-- selected folder itself — that is chevron-only via _userExpanded.
+	-- Rebuild expand state from scratch so a row click can never leave a
+	-- folder open unless the user opened it with the chevron.
+	wipe(status.groups)
 	for i = 1, #pathParts - 1 do
 		status.groups[table.concat(pathParts, "\001", 1, i)] = true
 	end
-	if self._userExpanded and self._userExpanded[unique] then
-		status.groups[unique] = true
-	else
-		status.groups[unique] = nil
+	if self._userExpanded then
+		for path, isOpen in pairs(self._userExpanded) do
+			if isOpen then
+				status.groups[path] = true
+			end
+		end
 	end
 	status.selected = unique
 
