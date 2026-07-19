@@ -1268,6 +1268,12 @@ function UI:ShowFolderContextMenu(owner, folderId)
 	if MenuUtil and MenuUtil.CreateContextMenu then
 		local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
 			rootDescription:CreateTitle(folder.name)
+			rootDescription:CreateButton("Add Folder", function()
+				self:CreateFolder(folderId)
+			end)
+			local addEntryBtn = rootDescription:CreateButton("Add Entry", function()
+				self:CreateEntry(folderId)
+			end)
 			local renameBtn = rootDescription:CreateButton("Rename Folder", function()
 				self:RenameSelectedFolder(folderId)
 			end)
@@ -1275,6 +1281,7 @@ function UI:ShowFolderContextMenu(owner, folderId)
 				self:DeleteSelectedFolder(folderId)
 			end)
 			if isRoot then
+				addEntryBtn:SetEnabled(false)
 				renameBtn:SetEnabled(false)
 				deleteBtn:SetEnabled(false)
 			end
@@ -1298,6 +1305,23 @@ function UI:ShowFolderContextMenu(owner, folderId)
 		info.text = folder.name
 		info.isTitle = true
 		info.notCheckable = true
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Add Folder"
+		info.notCheckable = true
+		info.func = function()
+			self:CreateFolder(folderId)
+		end
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Add Entry"
+		info.notCheckable = true
+		info.disabled = isRoot
+		info.func = function()
+			self:CreateEntry(folderId)
+		end
 		UIDropDownMenu_AddButton(info, level)
 
 		info = UIDropDownMenu_CreateInfo()
@@ -1357,8 +1381,8 @@ function UI:CreateFolder(parentId)
 	end)
 end
 
-function UI:CreateEntry()
-	local parentId = self.selectedFolderId or Data:GetRootId()
+function UI:CreateEntry(parentId)
+	parentId = parentId or self.selectedFolderId or Data:GetRootId()
 	if parentId == Data:GetRootId() then
 		addon():Notify("Select a folder before creating an entry.", true)
 		return
@@ -1369,6 +1393,7 @@ function UI:CreateEntry()
 			addon():Notify(tostring(err), true)
 			return
 		end
+		self:SelectFolder(parentId, true)
 		self:RefreshAll()
 		self:SelectEntry(id, true)
 		self:SetStatus("Entry created.")
@@ -2069,7 +2094,7 @@ function UI:CreateWindow()
 
 	-- Centre list
 	local listContainer = AceGUI:Create("InlineGroup")
-	listContainer:SetTitle("Contents")
+	listContainer:SetTitle("Folder contents")
 	listContainer:SetWidth(320)
 	listContainer:SetFullHeight(true)
 	listContainer:SetAutoAdjustHeight(false)
@@ -2077,7 +2102,7 @@ function UI:CreateWindow()
 	content:AddChild(listContainer)
 	self.listContainer = listContainer
 
-	-- Place sort control beside the "Contents" title text.
+	-- Place sort control beside the "Folder contents" title text.
 	listContainer.titletext:ClearAllPoints()
 	listContainer.titletext:SetPoint("TOPLEFT", 14, 0)
 	listContainer.titletext:SetJustifyH("LEFT")
