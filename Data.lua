@@ -190,28 +190,6 @@ function Data:MoveFolder(id, newParentId, index)
 	return true
 end
 
-function Data:ReorderFolder(id, direction)
-	-- direction: -1 up, +1 down within siblings
-	local folder = self:GetFolder(id)
-	if not folder or not folder.parentId then
-		return false
-	end
-	local parent = self:GetFolder(folder.parentId)
-	if not parent then
-		return false
-	end
-	local idx = self:_IndexOf(parent.children, id)
-	if not idx then
-		return false
-	end
-	local newIdx = idx + direction
-	if newIdx < 1 or newIdx > #parent.children then
-		return false
-	end
-	parent.children[idx], parent.children[newIdx] = parent.children[newIdx], parent.children[idx]
-	return true
-end
-
 function Data:CreateEntry(parentId, name)
 	local parent = self:GetFolder(parentId)
 	if not parent then

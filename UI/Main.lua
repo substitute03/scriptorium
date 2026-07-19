@@ -748,18 +748,6 @@ function UI:RenameSelectedFolder(folderId)
 	end)
 end
 
-function UI:MoveFolderUp()
-	if Data:ReorderFolder(self.selectedFolderId, -1) then
-		self:RefreshAll()
-	end
-end
-
-function UI:MoveFolderDown()
-	if Data:ReorderFolder(self.selectedFolderId, 1) then
-		self:RefreshAll()
-	end
-end
-
 function UI:MoveSelectedIntoFolder(entryId)
 	local movingEntry = entryId or self.selectedEntryId
 	if not movingEntry then
@@ -1180,8 +1168,6 @@ function UI:CreateWindow()
 		return b
 	end
 
-	toolButton("Up", 50, function() self:MoveFolderUp() end)
-	toolButton("Down", 55, function() self:MoveFolderDown() end)
 	self.sortButton = toolButton(
 		Data:GetSortMode() == "name" and "Sort: Name" or "Sort: Modified",
 		120,
