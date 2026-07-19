@@ -1855,10 +1855,20 @@ function UI:ShowMacroScopeDialog(callback)
 	end)
 	self.scopeFrame = frame
 
+	if frame.frame then
+		Compat.RaiseFrame(frame.frame)
+	end
+
 	local label = AceGUI:Create("Label")
 	label:SetFullWidth(true)
 	label:SetText("Choose macro type:")
 	frame:AddChild(label)
+
+	local spacer = AceGUI:Create("Label")
+	spacer:SetFullWidth(true)
+	spacer:SetText(" ")
+	spacer:SetHeight(8)
+	frame:AddChild(spacer)
 
 	local globalBtn = AceGUI:Create("Button")
 	globalBtn:SetText("Global Macro")
