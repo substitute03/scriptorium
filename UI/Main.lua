@@ -585,7 +585,7 @@ function UI:RefreshList()
 	self.addEntryButton = addEntryBtn
 
 	local pathLabel = AceGUI:Create("Label")
-	pathLabel:SetWidth(230)
+	pathLabel:SetWidth(280)
 	pathLabel:SetText("|cffffd100" .. Data:GetFolderPath(folderId) .. "|r")
 	headerRow:AddChild(pathLabel)
 
@@ -614,10 +614,41 @@ function UI:RefreshList()
 end
 
 function UI:PopulateSearchResults(query)
+	local headerRow = AceGUI:Create("SimpleGroup")
+	headerRow:SetFullWidth(true)
+	headerRow:SetLayout("Flow")
+	self.listGroup:AddChild(headerRow)
+
 	local header = AceGUI:Create("Label")
-	header:SetFullWidth(true)
 	header:SetText("|cffffd100Search:|r " .. query)
-	self.listGroup:AddChild(header)
+	local textWidth = (header.label and header.label:GetStringWidth()) or 100
+	header:SetWidth(math.min(240, math.max(70, textWidth + 10)))
+	headerRow:AddChild(header)
+
+	local clearIcon = AceGUI:Create("Icon")
+	clearIcon:SetImage("Interface\\Buttons\\UI-StopButton")
+	clearIcon:SetImageSize(14, 14)
+	clearIcon:SetWidth(18)
+	clearIcon:SetHeight(18)
+	clearIcon:SetLabel(nil)
+	clearIcon:SetCallback("OnClick", function()
+		self:ClearSearch()
+	end)
+	clearIcon:SetCallback("OnEnter", function(widget)
+		GameTooltip:SetOwner(widget.frame, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Clear search")
+		GameTooltip:Show()
+	end)
+	clearIcon:SetCallback("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+	headerRow:AddChild(clearIcon)
+
+	local headerGap = AceGUI:Create("Label")
+	headerGap:SetFullWidth(true)
+	headerGap:SetText(" ")
+	headerGap:SetHeight(6)
+	self.listGroup:AddChild(headerGap)
 
 	local results = Search:Query(query)
 	if #results == 0 then
@@ -1637,7 +1668,7 @@ function UI:CreateWindow()
 	tree:SetFullWidth(true)
 	tree:SetFullHeight(true)
 	tree:SetLayout("Fill")
-	tree:SetTreeWidth(220, false)
+	tree:SetTreeWidth(280, false)
 	tree:SetCallback("OnGroupSelected", function(widget, event, uniquevalue)
 		if self._ignoreTreeSelect then
 			return
@@ -1660,7 +1691,10 @@ function UI:CreateWindow()
 	body:AddChild(tree)
 	self.treeGroup = tree
 
-	-- Content area inside tree group: two columns
+	-- Content area inside tree group: two columns.
+	-- Use relative widths so Contents+Entry always share one row. Fixed widths that
+	-- exceed the TreeGroup content area cause Flow to wrap; with FullHeight on
+	-- Contents, the wrapped Entry row is then skipped and the panel disappears.
 	local content = AceGUI:Create("SimpleGroup")
 	content:SetFullWidth(true)
 	content:SetFullHeight(true)
@@ -1671,7 +1705,7 @@ function UI:CreateWindow()
 	-- Centre list
 	local listContainer = AceGUI:Create("InlineGroup")
 	listContainer:SetTitle("Contents")
-	listContainer:SetWidth(280)
+	listContainer:SetRelativeWidth(0.44)
 	listContainer:SetFullHeight(true)
 	listContainer:SetAutoAdjustHeight(false)
 	listContainer:SetLayout("Fill")
@@ -1700,7 +1734,7 @@ function UI:CreateWindow()
 	-- Right detail (scroll so editor controls stay inside the frame)
 	local detail = AceGUI:Create("InlineGroup")
 	detail:SetTitle("Entry")
-	detail:SetWidth(400)
+	detail:SetRelativeWidth(0.55)
 	detail:SetFullHeight(true)
 	detail:SetAutoAdjustHeight(false)
 	detail:SetLayout("Fill")
