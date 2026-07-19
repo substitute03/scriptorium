@@ -88,7 +88,6 @@ function UI:LoadEntryIntoEditor(entry)
 	if self.descEdit then self.descEdit:SetDisabled(not enabled) end
 	if self.bodyEdit then self.bodyEdit:SetDisabled(not enabled) end
 	if self.iconButton then self.iconButton:SetDisabled(not enabled) end
-	if self.copyButton then self.copyButton:SetDisabled(not enabled) end
 	if self.macroButton then self.macroButton:SetDisabled(not enabled) end
 	if self.dupEntryButton then self.dupEntryButton:SetDisabled(not enabled) end
 	if self.delEntryButton then self.delEntryButton:SetDisabled(not enabled) end
@@ -411,7 +410,7 @@ function UI:AddListRow(info)
 				end
 			end
 		elseif button == "RightButton" then
-			self:ShowListContextMenu(info)
+			self:ShowListContextMenu(btn.frame, info)
 		end
 	end)
 	self.listGroup:AddChild(btn)
@@ -425,22 +424,100 @@ end
 -- Context menus / actions
 ------------------------------------------------------------------------
 
-function UI:ShowListContextMenu(info)
-	if info.kind == "entry" then
-		-- Right-click selects then offers rename via prompt.
-		self:SelectEntry(info.id, true)
-		addon():PromptName("Rename entry:", Data:GetEntry(info.id).name, function(name)
-			local ok, err = Data:UpdateEntry(info.id, { name = name })
-			if not ok then
-				addon():Notify(err, true)
-			else
-				self:ClearDirty()
+function UI:ShowListContextMenu(owner, info)
+	if info.kind ~= "entry" then
+		return
+	end
+	local entryId = info.id
+	local entry = Data:GetEntry(entryId)
+	if not entry then
+		return
+	end
+
+	local function openMenu()
+		if self.selectedEntryId ~= entryId then
+			self:SelectEntry(entryId, true)
+		end
+
+		if MenuUtil and MenuUtil.CreateContextMenu then
+			local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
+				rootDescription:CreateTitle(entry.name)
+				rootDescription:CreateButton("Create Blizzard Macro", function()
+					self:CreateBlizzardMacro(entryId)
+				end)
+				rootDescription:CreateButton("Rename", function()
+					self:RenameSelectedEntry(entryId)
+				end)
+				rootDescription:CreateButton("Duplicate", function()
+					self:DuplicateSelectedEntry(entryId)
+				end)
+				rootDescription:CreateButton("Delete", function()
+					self:DeleteSelectedEntry(entryId)
+				end)
+			end)
+			if menu then
+				menu:SetFrameStrata("TOOLTIP")
+				menu:SetToplevel(true)
 			end
-			self:RefreshAll()
-			if self.selectedEntryId == info.id then
-				self:LoadEntryIntoEditor(Data:GetEntry(info.id))
+			return
+		end
+
+		if not self._entryDropDown then
+			self._entryDropDown = CreateFrame("Frame", "ScriptoriumEntryContextMenu", UIParent, "UIDropDownMenuTemplate")
+		end
+		self._entryDropDown:SetFrameStrata("TOOLTIP")
+		self._entryDropDown:SetToplevel(true)
+		UIDropDownMenu_Initialize(self._entryDropDown, function(_, level)
+			local menuInfo = UIDropDownMenu_CreateInfo()
+			menuInfo.text = entry.name
+			menuInfo.isTitle = true
+			menuInfo.notCheckable = true
+			UIDropDownMenu_AddButton(menuInfo, level)
+
+			menuInfo = UIDropDownMenu_CreateInfo()
+			menuInfo.text = "Create Blizzard Macro"
+			menuInfo.notCheckable = true
+			menuInfo.func = function()
+				self:CreateBlizzardMacro(entryId)
 			end
-		end)
+			UIDropDownMenu_AddButton(menuInfo, level)
+
+			menuInfo = UIDropDownMenu_CreateInfo()
+			menuInfo.text = "Rename"
+			menuInfo.notCheckable = true
+			menuInfo.func = function()
+				self:RenameSelectedEntry(entryId)
+			end
+			UIDropDownMenu_AddButton(menuInfo, level)
+
+			menuInfo = UIDropDownMenu_CreateInfo()
+			menuInfo.text = "Duplicate"
+			menuInfo.notCheckable = true
+			menuInfo.func = function()
+				self:DuplicateSelectedEntry(entryId)
+			end
+			UIDropDownMenu_AddButton(menuInfo, level)
+
+			menuInfo = UIDropDownMenu_CreateInfo()
+			menuInfo.text = "Delete"
+			menuInfo.notCheckable = true
+			menuInfo.func = function()
+				self:DeleteSelectedEntry(entryId)
+			end
+			UIDropDownMenu_AddButton(menuInfo, level)
+		end, "MENU")
+		ToggleDropDownMenu(1, nil, self._entryDropDown, "cursor", 0, 0)
+		local list = _G["DropDownList1"]
+		if list then
+			list:SetFrameStrata("TOOLTIP")
+			list:SetToplevel(true)
+		end
+	end
+
+	if self.selectedEntryId ~= entryId then
+		self:WithUnsavedGuard(openMenu)
+	else
+		openMenu()
 	end
 end
 
@@ -579,8 +656,8 @@ function UI:DeleteSelectedFolder(folderId)
 	)
 end
 
-function UI:DeleteSelectedEntry()
-	local id = self.selectedEntryId
+function UI:DeleteSelectedEntry(entryId)
+	local id = entryId or self.selectedEntryId
 	if not id then
 		return
 	end
@@ -603,8 +680,28 @@ function UI:DeleteSelectedEntry()
 	)
 end
 
-function UI:DuplicateSelectedEntry()
-	local id = self.selectedEntryId
+function UI:RenameSelectedEntry(entryId)
+	local id = entryId or self.selectedEntryId
+	local entry = Data:GetEntry(id)
+	if not entry then
+		return
+	end
+	addon():PromptName("Rename entry:", entry.name, function(name)
+		local ok, err = Data:UpdateEntry(id, { name = name })
+		if not ok then
+			addon():Notify(err, true)
+		else
+			self:ClearDirty()
+		end
+		self:RefreshAll()
+		if self.selectedEntryId == id then
+			self:LoadEntryIntoEditor(Data:GetEntry(id))
+		end
+	end)
+end
+
+function UI:DuplicateSelectedEntry(entryId)
+	local id = entryId or self.selectedEntryId
 	if not id then
 		return
 	end
@@ -910,25 +1007,13 @@ function UI:ShowIconPickerDialog(callback)
 	refreshGrid()
 end
 
-function UI:CopyText()
-	if not self.bodyEdit then
+function UI:CreateBlizzardMacro(entryId)
+	local id = entryId or self.selectedEntryId
+	if not id then
 		return
 	end
-	local edit = self.bodyEdit.editbox or self.bodyEdit
-	-- AceGUI MultiLineEditBox exposes .editBox
-	local box = self.bodyEdit.editBox
-	if box then
-		box:SetFocus()
-		box:HighlightText()
-		self:SetStatus("Text selected — press Ctrl+C to copy.")
-	else
-		self:SetStatus("Select text in the editor and press Ctrl+C.")
-	end
-end
-
-function UI:CreateBlizzardMacro()
-	if not self.selectedEntryId then
-		return
+	if id ~= self.selectedEntryId then
+		self:SelectEntry(id, true)
 	end
 	-- Save first if dirty so macro uses latest text.
 	if self:IsDirty() then
@@ -936,7 +1021,7 @@ function UI:CreateBlizzardMacro()
 			return
 		end
 	end
-	local entry = Data:GetEntry(self.selectedEntryId)
+	local entry = Data:GetEntry(id)
 	if not entry then
 		return
 	end
@@ -1244,10 +1329,6 @@ function UI:CreateWindow()
 		self:SaveCurrentEntry()
 	end)
 	self.saveButton:SetDisabled(true)
-
-	self.copyButton = actionBtn("Copy Text", 100, function()
-		self:CopyText()
-	end)
 
 	self.macroButton = actionBtn("Create Blizzard Macro", 160, function()
 		self:CreateBlizzardMacro()
