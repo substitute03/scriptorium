@@ -1211,7 +1211,7 @@ function UI:ShowListContextMenu(owner, info)
 				rootDescription:CreateButton("Duplicate", function()
 					self:DuplicateSelectedEntry(entryId)
 				end)
-				rootDescription:CreateButton("Move into Folder…", function()
+				rootDescription:CreateButton("Move into Folder", function()
 					self:MoveSelectedIntoFolder(entryId)
 				end)
 				rootDescription:CreateButton("Delete", function()
@@ -1311,6 +1311,9 @@ function UI:ShowFolderContextMenu(owner, folderId)
 			rootDescription:CreateButton("Create Blizzard Macros From Folder", function()
 				self:CreateBlizzardMacrosFromFolder(folderId)
 			end)
+			local importBtn = rootDescription:CreateButton("Import Macros to Folder", function()
+				self:ShowImportMacrosDialog(folderId)
+			end)
 			local renameBtn = rootDescription:CreateButton("Rename Folder", function()
 				self:RenameSelectedFolder(folderId)
 			end)
@@ -1319,6 +1322,7 @@ function UI:ShowFolderContextMenu(owner, folderId)
 			end)
 			if isRoot then
 				addEntryBtn:SetEnabled(false)
+				importBtn:SetEnabled(false)
 				renameBtn:SetEnabled(false)
 				deleteBtn:SetEnabled(false)
 			end
@@ -1366,6 +1370,15 @@ function UI:ShowFolderContextMenu(owner, folderId)
 		info.notCheckable = true
 		info.func = function()
 			self:CreateBlizzardMacrosFromFolder(folderId)
+		end
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Import Macros to Folder"
+		info.notCheckable = true
+		info.disabled = isRoot
+		info.func = function()
+			self:ShowImportMacrosDialog(folderId)
 		end
 		UIDropDownMenu_AddButton(info, level)
 
@@ -2052,6 +2065,319 @@ function UI:ShowFolderMacroScopeDialog(callback)
 	frame:AddChild(charBtn)
 end
 
+function UI:ShowImportMacrosDialog(folderId)
+	local folder = Data:GetFolder(folderId)
+	if not folder or folderId == Data:GetRootId() then
+		addon():Notify("Select a folder before importing macros.", true)
+		return
+	end
+
+	if self.importFrame then
+		AceGUI:Release(self.importFrame)
+		self.importFrame = nil
+	end
+
+	local state = {
+		perCharacter = false,
+		filter = "",
+		selected = {}, -- [macroIndex] = true
+		macros = {},
+	}
+
+	local frame = AceGUI:Create("Window")
+	frame:SetTitle("Import Macros")
+	frame:SetLayout("List")
+	frame:SetWidth(420)
+	frame:SetHeight(520)
+	frame:EnableResize(false)
+	frame:SetCallback("OnClose", function(widget)
+		AceGUI:Release(widget)
+		if self.importFrame == widget then
+			self.importFrame = nil
+		end
+	end)
+	self.importFrame = frame
+
+	if frame.frame then
+		Compat.RaiseFrame(frame.frame)
+		-- Use more of the window chrome so the footer can sit near the bottom edge.
+		if frame.content then
+			frame.content:ClearAllPoints()
+			frame.content:SetPoint("TOPLEFT", frame.frame, "TOPLEFT", 12, -32)
+			frame.content:SetPoint("BOTTOMRIGHT", frame.frame, "BOTTOMRIGHT", -12, 8)
+		end
+	end
+
+	local intro = AceGUI:Create("Label")
+	intro:SetFullWidth(true)
+	intro:SetText(string.format("Import Blizzard macros into |cffffd100%s|r.", folder.name))
+	frame:AddChild(intro)
+
+	local scopeRow = AceGUI:Create("SimpleGroup")
+	scopeRow:SetFullWidth(true)
+	scopeRow:SetLayout("Flow")
+	frame:AddChild(scopeRow)
+
+	local globalBtn = AceGUI:Create("Button")
+	globalBtn:SetText("Global Macros")
+	globalBtn:SetWidth(190)
+	scopeRow:AddChild(globalBtn)
+
+	local charBtn = AceGUI:Create("Button")
+	charBtn:SetText("Character Macros")
+	charBtn:SetWidth(190)
+	scopeRow:AddChild(charBtn)
+
+	local filter = AceGUI:Create("EditBox")
+	filter:SetLabel("Filter by name")
+	filter:SetFullWidth(true)
+	filter:DisableButton(true)
+	frame:AddChild(filter)
+
+	local actionRow = AceGUI:Create("SimpleGroup")
+	actionRow:SetFullWidth(true)
+	actionRow:SetLayout("Flow")
+	frame:AddChild(actionRow)
+
+	local selectAllBtn = AceGUI:Create("Button")
+	selectAllBtn:SetText("Select All")
+	selectAllBtn:SetWidth(120)
+	actionRow:AddChild(selectAllBtn)
+
+	local clearBtn = AceGUI:Create("Button")
+	clearBtn:SetText("Clear")
+	clearBtn:SetWidth(80)
+	actionRow:AddChild(clearBtn)
+
+	local gapAfterActions = AceGUI:Create("Label")
+	gapAfterActions:SetFullWidth(true)
+	gapAfterActions:SetText(" ")
+	gapAfterActions:SetHeight(8)
+	frame:AddChild(gapAfterActions)
+
+	local status = AceGUI:Create("Label")
+	status:SetFullWidth(true)
+	status:SetText("")
+	frame:AddChild(status)
+
+	local gapAfterStatus = AceGUI:Create("Label")
+	gapAfterStatus:SetFullWidth(true)
+	gapAfterStatus:SetText(" ")
+	gapAfterStatus:SetHeight(8)
+	frame:AddChild(gapAfterStatus)
+
+	local listScroll = AceGUI:Create("ScrollFrame")
+	listScroll:SetFullWidth(true)
+	listScroll:SetHeight(200)
+	listScroll:SetLayout("List")
+	frame:AddChild(listScroll)
+
+	local footer = AceGUI:Create("SimpleGroup")
+	footer:SetFullWidth(true)
+	footer:SetLayout("Flow")
+	frame:AddChild(footer)
+
+	local importBtn = AceGUI:Create("Button")
+	importBtn:SetText("Import Selected")
+	importBtn:SetWidth(160)
+	footer:AddChild(importBtn)
+
+	local cancelBtn = AceGUI:Create("Button")
+	cancelBtn:SetText("Cancel")
+	cancelBtn:SetWidth(100)
+	footer:AddChild(cancelBtn)
+
+	local function layoutImportListHeight()
+		local content = frame.content
+		local listFrame = listScroll and listScroll.frame
+		local footerFrame = footer and footer.frame
+		local anchor = gapAfterStatus and gapAfterStatus.frame
+		if not content or not listFrame or not footerFrame or not anchor then
+			return
+		end
+
+		-- Pin footer to the bottom of the content area, then stretch the list
+		-- between the status gap and the footer (fills the empty modal space).
+		local contentW = content:GetWidth() or 0
+		footerFrame:ClearAllPoints()
+		footerFrame:SetPoint("BOTTOMLEFT", content, "BOTTOMLEFT", 0, 2)
+		footerFrame:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 2)
+		if contentW > 0 then
+			footerFrame:SetWidth(contentW)
+		end
+
+		listFrame:ClearAllPoints()
+		listFrame:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -2)
+		listFrame:SetPoint("BOTTOMRIGHT", footerFrame, "TOPRIGHT", 0, 6)
+		local h = listFrame:GetHeight() or 0
+		if h > 0 then
+			listScroll:SetHeight(h)
+		end
+		if listScroll.DoLayout then
+			listScroll:DoLayout()
+		end
+	end
+
+	local origDoLayout = frame.DoLayout
+	frame.DoLayout = function(self)
+		origDoLayout(self)
+		layoutImportListHeight()
+	end
+
+	if frame.content then
+		frame.content:HookScript("OnSizeChanged", function()
+			layoutImportListHeight()
+		end)
+	end
+	C_Timer.After(0, function()
+		if frame.DoLayout then
+			frame:DoLayout()
+		end
+		layoutImportListHeight()
+	end)
+	C_Timer.After(0.05, layoutImportListHeight)
+
+	local function countSelected(visibleOnly)
+		local n = 0
+		for _, macro in ipairs(state.macros) do
+			if state.selected[macro.index] then
+				if not visibleOnly then
+					n = n + 1
+				else
+					local f = state.filter
+					if f == "" or macro.name:lower():find(f, 1, true) then
+						n = n + 1
+					end
+				end
+			end
+		end
+		return n
+	end
+
+	local function updateStatus()
+		local total = #state.macros
+		local selected = countSelected(false)
+		local scope = state.perCharacter and "character" or "global"
+		status:SetText(string.format("%d %s macro%s — %d selected", total, scope, total == 1 and "" or "s", selected))
+		importBtn:SetDisabled(selected == 0)
+	end
+
+	local function updateScopeButtons()
+		if state.perCharacter then
+			globalBtn:SetText("Global Macros")
+			charBtn:SetText("Character Macros")
+		else
+			globalBtn:SetText("Global Macros")
+			charBtn:SetText("Character Macros")
+		end
+	end
+
+	local function rebuildList()
+		listScroll:ReleaseChildren()
+		local filterLower = state.filter
+		local shown = 0
+		for _, macro in ipairs(state.macros) do
+			if filterLower == "" or macro.name:lower():find(filterLower, 1, true) then
+				shown = shown + 1
+				local row = AceGUI:Create("CheckBox")
+				row:SetLabel(macro.name)
+				row:SetFullWidth(true)
+				row:SetValue(state.selected[macro.index] and true or false)
+				row:SetCallback("OnValueChanged", function(_, _, checked)
+					if checked then
+						state.selected[macro.index] = true
+					else
+						state.selected[macro.index] = nil
+					end
+					updateStatus()
+				end)
+				listScroll:AddChild(row)
+			end
+		end
+		if shown == 0 then
+			local empty = AceGUI:Create("Label")
+			empty:SetFullWidth(true)
+			if #state.macros == 0 then
+				empty:SetText(state.perCharacter and "No character macros found." or "No global macros found.")
+			else
+				empty:SetText("No macros match this filter.")
+			end
+			listScroll:AddChild(empty)
+		end
+		updateStatus()
+		layoutImportListHeight()
+	end
+
+	local function loadScope(perCharacter)
+		state.perCharacter = perCharacter and true or false
+		state.macros = MacroBridge:ListMacros(state.perCharacter)
+		wipe(state.selected)
+		updateScopeButtons()
+		rebuildList()
+	end
+
+	globalBtn:SetCallback("OnClick", function()
+		loadScope(false)
+	end)
+	charBtn:SetCallback("OnClick", function()
+		loadScope(true)
+	end)
+
+	filter:SetCallback("OnTextChanged", function(_, _, text)
+		state.filter = (text or ""):match("^%s*(.-)%s*$"):lower() or ""
+		rebuildList()
+	end)
+
+	selectAllBtn:SetCallback("OnClick", function()
+		local filterLower = state.filter
+		for _, macro in ipairs(state.macros) do
+			if filterLower == "" or macro.name:lower():find(filterLower, 1, true) then
+				state.selected[macro.index] = true
+			end
+		end
+		rebuildList()
+	end)
+
+	clearBtn:SetCallback("OnClick", function()
+		wipe(state.selected)
+		rebuildList()
+	end)
+
+	importBtn:SetCallback("OnClick", function()
+		local toImport = {}
+		for _, macro in ipairs(state.macros) do
+			if state.selected[macro.index] then
+				toImport[#toImport + 1] = macro
+			end
+		end
+		local created, failed, lastError = MacroBridge:ImportToFolder(folderId, toImport)
+		local message
+		if failed == 0 then
+			message = string.format("Imported %d macro%s into \"%s\".", created, created == 1 and "" or "s", folder.name)
+		elseif created == 0 then
+			message = lastError or "Failed to import macros."
+		else
+			message = string.format("Imported %d macro%s (%d failed).", created, created == 1 and "" or "s", failed)
+		end
+		addon():Notify(message, created == 0)
+		self:SetStatus(message)
+		AceGUI:Release(frame)
+		self.importFrame = nil
+		if created > 0 then
+			self:SelectFolder(folderId, true)
+			self:RefreshAll()
+		end
+	end)
+
+	cancelBtn:SetCallback("OnClick", function()
+		AceGUI:Release(frame)
+		self.importFrame = nil
+	end)
+
+	loadScope(false)
+	layoutImportListHeight()
+end
+
 function UI:ClearSearch()
 	self.searchQuery = ""
 	if self.searchTimer then
@@ -2127,6 +2453,10 @@ function UI:CreateWindow()
 		end
 		if AddressBar and AddressBar.Destroy then
 			AddressBar:Destroy()
+		end
+		if self.importFrame then
+			AceGUI:Release(self.importFrame)
+			self.importFrame = nil
 		end
 		AceGUI:Release(widget)
 		self.frame = nil

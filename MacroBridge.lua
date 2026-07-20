@@ -1,7 +1,8 @@
 --- MacroBridge.lua
---- Create Blizzard macros from repository entries.
+--- Create Blizzard macros from repository entries, and import macros into folders.
 local ADDON_NAME, ns = ...
 local Compat = ns.Compat
+local Data = ns.Data
 
 local MacroBridge = {}
 ns.MacroBridge = MacroBridge
@@ -23,6 +24,70 @@ local function findMacroByName(name, perCharacter)
 		end
 	end
 	return nil
+end
+
+--- List Blizzard macros in the given scope.
+--- @param perCharacter boolean
+--- @return macros { { index, name, icon, body }, ... }
+function MacroBridge:ListMacros(perCharacter)
+	local accountMax, charMax = Compat.GetMacroLimits()
+	local startIndex, endIndex
+	if perCharacter then
+		startIndex = accountMax + 1
+		endIndex = accountMax + charMax
+	else
+		startIndex = 1
+		endIndex = accountMax
+	end
+
+	local macros = {}
+	for i = startIndex, endIndex do
+		local name, icon, body = GetMacroInfo(i)
+		if name then
+			macros[#macros + 1] = {
+				index = i,
+				name = name,
+				icon = Compat.NormalizeIcon(icon),
+				body = body or "",
+			}
+		end
+	end
+	return macros
+end
+
+--- Import one or more Blizzard macros into a folder as entries.
+--- @param folderId string
+--- @param macros table list of { name, icon, body }
+--- @return created number
+--- @return failed number
+--- @return lastError string|nil
+function MacroBridge:ImportToFolder(folderId, macros)
+	if not folderId or folderId == Data:GetRootId() then
+		return 0, 0, "Cannot import macros into the root folder."
+	end
+	if not Data:GetFolder(folderId) then
+		return 0, 0, "Folder not found."
+	end
+	if not macros or #macros == 0 then
+		return 0, 0, "No macros selected."
+	end
+
+	local created, failed, lastError = 0, 0, nil
+	for _, macro in ipairs(macros) do
+		local id, err = Data:CreateEntry(folderId, macro.name or "Imported Macro")
+		if not id then
+			failed = failed + 1
+			lastError = tostring(err)
+		else
+			Data:UpdateEntry(id, {
+				icon = macro.icon,
+				text = macro.body or "",
+				description = "Imported from Blizzard macro.",
+			})
+			created = created + 1
+		end
+	end
+	return created, failed, lastError
 end
 
 --- Create a Blizzard macro from an entry.
