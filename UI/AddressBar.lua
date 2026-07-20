@@ -1,5 +1,5 @@
 --- UI/AddressBar.lua
---- Windows Explorer-style folder address bar (breadcrumbs + editable path).
+--- Single text-box address bar: breadcrumb display when idle, slash path when editing.
 local ADDON_NAME, ns = ...
 
 local Data = ns.Data
@@ -10,10 +10,6 @@ ns.AddressBar = AddressBar
 
 local MAX_SUGGESTIONS = 10
 local SUGGEST_ROW_HEIGHT = 18
-
-local function addon()
-	return ns.Addon
-end
 
 local function ui()
 	return ns.UI
@@ -51,49 +47,52 @@ function AddressBar:Create(hostWidget)
 	})
 	bar:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
 	bar:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
-	bar:EnableMouse(true)
-	bar:SetScript("OnMouseDown", function()
+	self.bar = bar
+
+	-- Colored breadcrumb display (EditBoxes cannot mix text colors).
+	local display = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	display:SetPoint("LEFT", bar, "LEFT", 10, 0)
+	display:SetPoint("RIGHT", bar, "RIGHT", -10, 0)
+	display:SetJustifyH("LEFT")
+	display:SetWordWrap(false)
+	if display.SetMaxLines then
+		display:SetMaxLines(1)
+	end
+	self.display = display
+
+	-- Invisible hit target so clicks on the breadcrumb enter edit mode.
+	local hit = CreateFrame("Button", nil, bar)
+	hit:SetAllPoints(bar)
+	hit:SetScript("OnClick", function()
+		self:EnterEditMode()
+	end)
+	self.hit = hit
+
+	-- Edit box used only while focused.
+	local edit = CreateFrame("EditBox", "ScriptoriumAddressEditBox", bar)
+	edit:SetPoint("TOPLEFT", bar, "TOPLEFT", 8, -4)
+	edit:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -8, 4)
+	edit:SetFontObject(GameFontHighlightSmall)
+	edit:SetAutoFocus(false)
+	edit:SetMaxLetters(512)
+	edit:SetTextInsets(2, 2, 0, 0)
+	edit:SetTextColor(1, 1, 1)
+	edit:Hide()
+	if edit.SetPropagateKeyboardInput then
+		edit:SetPropagateKeyboardInput(false)
+	end
+
+	edit:SetScript("OnEditFocusGained", function(box)
+		if box.SetPropagateKeyboardInput then
+			box:SetPropagateKeyboardInput(false)
+		end
 		if not self.editing then
 			self:EnterEditMode()
 		end
 	end)
-	self.bar = bar
-
-	-- Breadcrumb container (click-through to bar except on labels).
-	local crumbs = CreateFrame("Frame", nil, bar)
-	crumbs:SetPoint("TOPLEFT", bar, "TOPLEFT", 8, -4)
-	crumbs:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -8, 4)
-	crumbs:EnableMouse(false)
-	self.crumbs = crumbs
-	self.crumbButtons = {}
-
-	-- Path edit box (hidden until edit mode).
-	local edit = CreateFrame("EditBox", "ScriptoriumAddressEditBox", bar, "InputBoxTemplate")
-	edit:SetPoint("TOPLEFT", bar, "TOPLEFT", 8, -4)
-	edit:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -8, 4)
-	edit:SetFontObject(ChatFontNormal)
-	edit:SetAutoFocus(false)
-	edit:SetMaxLetters(512)
-	edit:SetTextInsets(2, 20, 3, 3)
-	edit:Hide()
-	-- Never let keystrokes reach action binds while typing in the path bar.
-	if edit.SetPropagateKeyboardInput then
-		edit:SetPropagateKeyboardInput(false)
-	end
-	edit:SetScript("OnEditFocusGained", function(box)
-		self.editing = true
-		if box.SetPropagateKeyboardInput then
-			box:SetPropagateKeyboardInput(false)
-		end
-	end)
 	edit:SetScript("OnEditFocusLost", function(box)
-		if box.SetPropagateKeyboardInput then
-			box:SetPropagateKeyboardInput(false)
-		end
-		-- Defer so suggestion clicks can run first.
 		C_Timer.After(0.05, function()
 			if self.editing and edit and not edit:HasFocus() then
-				-- Keep editing if suggestions still have mouse focus.
 				if self.suggestFrame and self.suggestFrame:IsMouseOver() then
 					return
 				end
@@ -102,13 +101,13 @@ function AddressBar:Create(hostWidget)
 		end)
 	end)
 	edit:SetScript("OnTextChanged", function(box, userInput)
-		if self.suppressTextChanged or not userInput then
+		if self.suppressTextChanged or not userInput or not self.editing then
 			return
 		end
 		self:ClearError()
 		self:UpdateSuggestions(box:GetText() or "")
 	end)
-	edit:SetScript("OnEnterPressed", function(box)
+	edit:SetScript("OnEnterPressed", function()
 		self:OnEnterPressed()
 	end)
 	edit:SetScript("OnEscapePressed", function()
@@ -118,7 +117,7 @@ function AddressBar:Create(hostWidget)
 		end
 		self:ExitEditMode(true)
 	end)
-	edit:SetScript("OnTabPressed", function(box)
+	edit:SetScript("OnTabPressed", function()
 		if self.suggestFrame and self.suggestFrame:IsShown() and self.suggestIndex > 0 then
 			self:ApplySuggestion(self.suggestIndex, false)
 			return
@@ -139,7 +138,6 @@ function AddressBar:Create(hostWidget)
 	end)
 	self.edit = edit
 
-	-- Autocomplete popup.
 	local suggest = CreateFrame("Frame", "ScriptoriumAddressSuggest", UIParent, "BackdropTemplate")
 	suggest:SetFrameStrata("TOOLTIP")
 	suggest:SetToplevel(true)
@@ -158,11 +156,7 @@ function AddressBar:Create(hostWidget)
 	self.suggestFrame = suggest
 	self.suggestButtons = {}
 
-	hostFrame:HookScript("OnSizeChanged", function()
-		self:LayoutCrumbs()
-	end)
-
-	self:ShowBreadcrumbs(self._folderId)
+	self:ShowDisplayPath(self._folderId)
 	return self
 end
 
@@ -175,9 +169,9 @@ function AddressBar:Destroy()
 	end
 	self.host = nil
 	self.bar = nil
-	self.crumbs = nil
+	self.display = nil
+	self.hit = nil
 	self.edit = nil
-	self.crumbButtons = nil
 	self.suggestButtons = nil
 	self.editing = false
 end
@@ -192,151 +186,88 @@ function AddressBar:SetFolder(folderId, force)
 	if self.editing and not force then
 		return
 	end
-	self:ShowBreadcrumbs(folderId)
+	self.editing = false
+	self:HideSuggestions()
+	self:ClearError()
+	self:ShowDisplayPath(folderId)
 end
 
 function AddressBar:IsEditing()
 	return self.editing
 end
 
+local function ColoredBreadcrumbText(folderId)
+	local segments = Data:GetFolderBreadcrumbs(folderId)
+	if #segments == 0 then
+		return ""
+	end
+	local parts = {}
+	for i, seg in ipairs(segments) do
+		if i > 1 then
+			parts[#parts + 1] = "|cff999999 > |r"
+		end
+		if i == #segments then
+			parts[#parts + 1] = "|cffffd100" .. seg.name .. "|r"
+		else
+			parts[#parts + 1] = "|cffffffff" .. seg.name .. "|r"
+		end
+	end
+	return table.concat(parts)
+end
+
+--- Idle display: white ancestors, yellow current folder.
+function AddressBar:ShowDisplayPath(folderId)
+	folderId = folderId or self._folderId
+	if self.display then
+		self.display:SetText(ColoredBreadcrumbText(folderId))
+		self.display:Show()
+	end
+	if self.hit then
+		self.hit:Show()
+	end
+	if self.edit then
+		self.suppressTextChanged = true
+		self.edit:SetText("")
+		self.edit:ClearFocus()
+		self.edit:Hide()
+		self.suppressTextChanged = false
+	end
+end
+
+--- Focused edit: slash path in a plain text box.
 function AddressBar:EnterEditMode()
-	if not self.bar or not self.edit then
+	if not self.edit then
 		return
 	end
 	self.editing = true
 	self:ClearError()
-	self.crumbs:Hide()
+	if self.display then
+		self.display:Hide()
+	end
+	if self.hit then
+		self.hit:Hide()
+	end
 	local path = Data:GetFolderSlashPath(self._folderId, false)
 	self.suppressTextChanged = true
 	self.edit:SetText(path)
-	self.suppressTextChanged = false
+	self.edit:SetTextColor(1, 1, 1)
 	self.edit:Show()
-	-- Don't open a full suggestion list until the user types.
+	self.suppressTextChanged = false
 	self.edit:SetFocus()
 	self.edit:HighlightText()
 	self:HideSuggestions()
 end
 
---- @param cancel boolean when true, discard typed path and restore crumbs
+--- @param cancel boolean when true, discard typed path and restore display
 function AddressBar:ExitEditMode(cancel)
 	if not self.editing then
+		self:ShowDisplayPath(self._folderId)
 		return
 	end
 	self.editing = false
 	self:HideSuggestions()
 	self:ClearError()
-	if self.edit then
-		self.edit:ClearFocus()
-		self.edit:Hide()
-	end
-	if self.crumbs then
-		self.crumbs:Show()
-	end
-	self:ShowBreadcrumbs(self._folderId)
-end
-
-------------------------------------------------------------------------
--- Breadcrumbs
-------------------------------------------------------------------------
-
-function AddressBar:ShowBreadcrumbs(folderId)
-	if not self.crumbs then
-		return
-	end
-	self.editing = false
-	if self.edit then
-		self.edit:Hide()
-	end
-	self.crumbs:Show()
-	self:ClearError()
-
-	local segments = Data:GetFolderBreadcrumbs(folderId)
-	local buttons = self.crumbButtons
-	for _, btn in ipairs(buttons) do
-		btn:Hide()
-	end
-
-	local x = 0
-	local index = 0
-	local function acquire()
-		index = index + 1
-		local btn = buttons[index]
-		if not btn then
-			btn = CreateFrame("Button", nil, self.crumbs)
-			btn:SetHeight(18)
-			btn.label = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-			btn.label:SetPoint("LEFT", 0, 0)
-			btn.label:SetJustifyH("LEFT")
-			btn:SetFontString(btn.label)
-			btn:SetNormalFontObject(GameFontHighlightSmall)
-			btn:SetHighlightFontObject(GameFontNormalSmall)
-			btn:SetScript("OnEnter", function(b)
-				b.label:SetTextColor(1, 0.82, 0)
-			end)
-			btn:SetScript("OnLeave", function(b)
-				if b.isCurrent then
-					b.label:SetTextColor(1, 0.82, 0)
-				else
-					b.label:SetTextColor(0.9, 0.9, 0.9)
-				end
-			end)
-			btn:SetScript("OnClick", function(b)
-				if b.folderId then
-					local owner = ui()
-					if owner and owner.SelectFolder then
-						owner:ExpandFolderPath(b.folderId)
-						owner:SelectFolder(b.folderId)
-					end
-				end
-			end)
-			buttons[index] = btn
-		end
-		return btn
-	end
-
-	for i, seg in ipairs(segments) do
-		if i > 1 then
-			local sep = acquire()
-			sep.folderId = nil
-			sep.isCurrent = false
-			sep:EnableMouse(false)
-			sep.label:SetText(" > ")
-			sep.label:SetTextColor(0.6, 0.6, 0.6)
-			sep:SetWidth(sep.label:GetStringWidth() + 2)
-			sep:ClearAllPoints()
-			sep:SetPoint("LEFT", self.crumbs, "LEFT", x, 0)
-			sep:Show()
-			x = x + sep:GetWidth()
-		end
-
-		local btn = acquire()
-		btn.folderId = seg.id
-		btn.isCurrent = (i == #segments)
-		btn:EnableMouse(true)
-		btn.label:SetText(seg.name)
-		if btn.isCurrent then
-			btn.label:SetTextColor(1, 0.82, 0)
-		else
-			btn.label:SetTextColor(0.9, 0.9, 0.9)
-		end
-		btn:SetWidth(math.max(12, btn.label:GetStringWidth() + 2))
-		btn:ClearAllPoints()
-		btn:SetPoint("LEFT", self.crumbs, "LEFT", x, 0)
-		btn:Show()
-		x = x + btn:GetWidth()
-	end
-
-	self._crumbWidth = x
-end
-
-function AddressBar:LayoutCrumbs()
-	if self.editing or not self.crumbs then
-		return
-	end
-	-- Re-show to reflow if host width changed (truncation could be added later).
-	if self._folderId then
-		self:ShowBreadcrumbs(self._folderId)
-	end
+	self:ShowDisplayPath(self._folderId)
 end
 
 ------------------------------------------------------------------------
@@ -369,7 +300,9 @@ end
 
 function AddressBar:NavigateToTypedPath()
 	local text = self.edit and self.edit:GetText() or ""
-	local folderId = Data:ResolveFolderPath(text)
+	-- Allow either slash paths or " > " display paths.
+	local normalized = text:gsub("%s*>%s*", "/")
+	local folderId = Data:ResolveFolderPath(normalized)
 	if not folderId then
 		self:SetError("Path not found.")
 		self:HideSuggestions()
@@ -432,8 +365,6 @@ function AddressBar:ShowSuggestions(suggestions)
 		if not btn then
 			btn = CreateFrame("Button", nil, frame)
 			btn:SetHeight(SUGGEST_ROW_HEIGHT)
-			btn:SetPoint("LEFT", 4, 0)
-			btn:SetPoint("RIGHT", -4, 0)
 			btn.label = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 			btn.label:SetPoint("LEFT", 4, 0)
 			btn.label:SetPoint("RIGHT", -4, 0)
@@ -461,17 +392,14 @@ function AddressBar:ShowSuggestions(suggestions)
 
 	frame:SetHeight(8 + #suggestions * SUGGEST_ROW_HEIGHT)
 	frame:Show()
-	if Compat.RaiseFrame then
-		-- RaiseFrame also re-centers; only bump strata/level here.
-		frame:SetFrameStrata("TOOLTIP")
-		frame:SetToplevel(true)
-		local level = 200
-		local owner = ui()
-		if owner and owner.frame and owner.frame.frame then
-			level = owner.frame.frame:GetFrameLevel() + 50
-		end
-		frame:SetFrameLevel(level)
+	frame:SetFrameStrata("TOOLTIP")
+	frame:SetToplevel(true)
+	local level = 200
+	local owner = ui()
+	if owner and owner.frame and owner.frame.frame then
+		level = owner.frame.frame:GetFrameLevel() + 50
 	end
+	frame:SetFrameLevel(level)
 	self:HighlightSuggestion()
 end
 

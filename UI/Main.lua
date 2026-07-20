@@ -596,7 +596,8 @@ function UI:LayoutBodyHeight()
 	end
 	local shellH = shell.frame:GetHeight() or 0
 	local navH = (nav.frame and nav.frame:GetHeight()) or 44
-	local height = math.max(120, shellH - navH - 6)
+	local gapH = self.navBottomGapHeight or 2
+	local height = math.max(120, shellH - navH - gapH - 6)
 	body:SetHeight(height)
 	if body.DoLayout then
 		body:DoLayout()
@@ -951,14 +952,29 @@ function UI:RefreshList()
 
 	local _, entries = Data:GetSortedChildren(folderId)
 
+	local toolbar = AceGUI:Create("SimpleGroup")
+	toolbar:SetFullWidth(true)
+	toolbar:SetLayout("Flow")
+	self.listGroup:AddChild(toolbar)
+
 	local addEntryBtn = AceGUI:Create("Button")
 	addEntryBtn:SetText("New Entry")
 	addEntryBtn:SetWidth(100)
 	addEntryBtn:SetCallback("OnClick", function()
 		self:CreateEntry()
 	end)
-	self.listGroup:AddChild(addEntryBtn)
+	toolbar:AddChild(addEntryBtn)
 	self.addEntryButton = addEntryBtn
+
+	local deleteAllBtn = AceGUI:Create("Button")
+	deleteAllBtn:SetText("Delete All")
+	deleteAllBtn:SetWidth(100)
+	deleteAllBtn:SetDisabled(#entries == 0)
+	deleteAllBtn:SetCallback("OnClick", function()
+		self:DeleteAllEntriesInFolder(folderId)
+	end)
+	toolbar:AddChild(deleteAllBtn)
+	self.deleteAllButton = deleteAllBtn
 
 	local spacer = AceGUI:Create("Label")
 	spacer:SetFullWidth(true)
@@ -1409,6 +1425,104 @@ function UI:ShowFolderContextMenu(owner, folderId)
 	end
 end
 
+function UI:ShowContentsEmptyContextMenu(owner)
+	local folderId = self.selectedFolderId or Data:GetRootId()
+	local folder = Data:GetFolder(folderId)
+	if not folder then
+		return
+	end
+	local isRoot = folderId == Data:GetRootId()
+
+	if MenuUtil and MenuUtil.CreateContextMenu then
+		local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
+			rootDescription:CreateTitle(folder.name)
+			local addEntryBtn = rootDescription:CreateButton("Add Entry", function()
+				self:CreateEntry(folderId)
+			end)
+			local importBtn = rootDescription:CreateButton("Import Macros to Folder", function()
+				self:ShowImportMacrosDialog(folderId)
+			end)
+			if isRoot then
+				addEntryBtn:SetEnabled(false)
+				importBtn:SetEnabled(false)
+			end
+		end)
+		if menu then
+			menu:SetFrameStrata("TOOLTIP")
+			menu:SetToplevel(true)
+		end
+		return
+	end
+
+	if not self._contentsEmptyDropDown then
+		self._contentsEmptyDropDown = CreateFrame("Frame", "ScriptoriumContentsEmptyContextMenu", UIParent, "UIDropDownMenuTemplate")
+	end
+	self._contentsEmptyDropDown:SetFrameStrata("TOOLTIP")
+	self._contentsEmptyDropDown:SetToplevel(true)
+	UIDropDownMenu_Initialize(self._contentsEmptyDropDown, function(_, level)
+		local info = UIDropDownMenu_CreateInfo()
+		info.text = folder.name
+		info.isTitle = true
+		info.notCheckable = true
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Add Entry"
+		info.notCheckable = true
+		info.disabled = isRoot
+		info.func = function()
+			self:CreateEntry(folderId)
+		end
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
+		info.text = "Import Macros to Folder"
+		info.notCheckable = true
+		info.disabled = isRoot
+		info.func = function()
+			self:ShowImportMacrosDialog(folderId)
+		end
+		UIDropDownMenu_AddButton(info, level)
+	end, "MENU")
+	ToggleDropDownMenu(1, nil, self._contentsEmptyDropDown, "cursor", 0, 0)
+	local list = _G["DropDownList1"]
+	if list then
+		list:SetFrameStrata("TOOLTIP")
+		list:SetToplevel(true)
+	end
+end
+
+function UI:EnsureContentsEmptyContext()
+	local scroll = self.listGroup
+	if not scroll or not scroll.frame or scroll._scriptoriumEmptyCtx then
+		return
+	end
+	scroll._scriptoriumEmptyCtx = true
+
+	local function onRightClick(_, button)
+		if button ~= "RightButton" then
+			return
+		end
+		self:ShowContentsEmptyContextMenu(scroll.frame)
+	end
+
+	local function attach(frame)
+		if not frame then
+			return
+		end
+		frame:EnableMouse(true)
+		if frame:GetScript("OnMouseUp") then
+			frame:HookScript("OnMouseUp", onRightClick)
+		else
+			frame:SetScript("OnMouseUp", onRightClick)
+		end
+	end
+
+	-- Catch right-clicks on empty scroll area (entry rows handle their own menus).
+	attach(scroll.frame)
+	attach(scroll.content)
+end
+
 function UI:CreateFolder(parentId)
 	parentId = parentId or self.selectedFolderId or Data:GetRootId()
 	addon():PromptName("New folder name:", "New Folder", function(name, dialog)
@@ -1504,6 +1618,51 @@ function UI:DeleteSelectedEntry(entryId)
 			self:SetStatus("Entry deleted.")
 		end
 	)
+end
+
+function UI:DeleteAllEntriesInFolder(folderId)
+	folderId = folderId or self.selectedFolderId
+	if not folderId or folderId == Data:GetRootId() then
+		addon():Notify("Select a folder before deleting entries.", true)
+		return
+	end
+	local folder = Data:GetFolder(folderId)
+	if not folder then
+		return
+	end
+	local _, entries = Data:GetSortedChildren(folderId)
+	if #entries == 0 then
+		addon():Notify("This folder has no entries to delete.", true)
+		return
+	end
+
+	local count = #entries
+	local message = string.format(
+		"Delete all %d entries in \"%s\"?\n\n|cffff5555This CANNOT be undone.|r\n\nThis does not delete your actual Blizzard macros, it just deletes your Scriptorium entries. ",
+		count,
+		folder.name
+	)
+	addon():ConfirmDelete(message, function()
+		local ids = {}
+		for _, entry in ipairs(entries) do
+			ids[#ids + 1] = entry.id
+		end
+		local clearedSelection = false
+		for _, id in ipairs(ids) do
+			if id == self.selectedEntryId then
+				clearedSelection = true
+			end
+			Data:DeleteEntry(id)
+		end
+		if clearedSelection then
+			self.selectedEntryId = nil
+			self:ClearDirty()
+			self:LoadEntryIntoEditor(nil)
+		end
+		self:SelectFolder(folderId, true)
+		self:RefreshAll()
+		self:SetStatus(string.format("Deleted %d entries.", count))
+	end)
 end
 
 function UI:RenameSelectedEntry(entryId)
@@ -2595,6 +2754,17 @@ function UI:CreateWindow()
 	AddressBar:SetFolder(self.selectedFolderId or Data:GetRootId(), true)
 	self:AlignAddressWithSearch()
 
+	-- Small gap under the address/search row (SimpleGroup respects SetHeight; Labels do not).
+	local NAV_BOTTOM_GAP = 2
+	local navBottomGap = AceGUI:Create("SimpleGroup")
+	navBottomGap:SetFullWidth(true)
+	navBottomGap:SetHeight(NAV_BOTTOM_GAP)
+	navBottomGap:SetAutoAdjustHeight(false)
+	navBottomGap:SetLayout("List")
+	shell:AddChild(navBottomGap)
+	self.navBottomGap = navBottomGap
+	self.navBottomGapHeight = NAV_BOTTOM_GAP
+
 	-- Body: TreeGroup provides left tree; content holds list + detail.
 	local body = AceGUI:Create("SimpleGroup")
 	body:SetFullWidth(true)
@@ -2686,6 +2856,7 @@ function UI:CreateWindow()
 	listScroll:SetLayout("List")
 	listContainer:AddChild(listScroll)
 	self.listGroup = listScroll
+	self:EnsureContentsEmptyContext()
 
 	-- Right detail (scroll so editor controls stay inside the frame)
 	local detail = AceGUI:Create("InlineGroup")
@@ -2793,7 +2964,7 @@ function UI:CreateWindow()
 	end, 30)
 
 	self:LoadEntryIntoEditor(nil)
-	frame:SetStatusText("Ready — /scriptorium to toggle")
+	frame:SetStatusText("Ready — /scriptorium or /scr to toggle")
 
 	-- AceGUI Flow lays out before TreeGroup content has a real width, which stacks
 	-- Contents/Entry until a resize. Nudge width to force a second layout pass.
