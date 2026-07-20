@@ -14,4 +14,5 @@ Data.lua
 Search.lua
 MacroBridge.lua
 Core.lua
+UI\AddressBar.lua
 UI\Main.lua

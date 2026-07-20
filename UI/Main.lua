@@ -7,6 +7,7 @@ local Data = ns.Data
 local Search = ns.Search
 local MacroBridge = ns.MacroBridge
 local Compat = ns.Compat
+local AddressBar = ns.AddressBar
 
 local UI = {}
 ns.UI = UI
@@ -137,11 +138,32 @@ function UI:SelectFolder(folderId, skipGuard)
 		self:RefreshTreeSelection()
 		self:RefreshList()
 		self:RefreshDetailEnabled()
+		if AddressBar and AddressBar.SetFolder then
+			AddressBar:SetFolder(self.selectedFolderId, true)
+		end
 	end
 	if skipGuard then
 		doSelect()
 	else
 		self:WithUnsavedGuard(doSelect)
+	end
+end
+
+--- Ensure ancestors of folderId are expanded in the tree (chevron + AceGUI groups).
+function UI:ExpandFolderPath(folderId)
+	if not folderId then
+		return
+	end
+	local pathParts = {}
+	local walk = folderId
+	while walk do
+		table.insert(pathParts, 1, walk)
+		local folder = Data:GetFolder(walk)
+		walk = folder and folder.parentId
+	end
+	self._userExpanded = self._userExpanded or {}
+	for i = 1, #pathParts - 1 do
+		self._userExpanded[table.concat(pathParts, "\001", 1, i)] = true
 	end
 end
 
@@ -157,6 +179,9 @@ function UI:SelectEntry(entryId, skipGuard)
 		self:RefreshTreeSelection()
 		self:RefreshList()
 		self:RefreshDetailEnabled()
+		if AddressBar and AddressBar.SetFolder then
+			AddressBar:SetFolder(self.selectedFolderId, true)
+		end
 	end
 	if skipGuard then
 		doSelect()
@@ -172,6 +197,9 @@ end
 function UI:RefreshAll()
 	self:RefreshTree()
 	self:RefreshList()
+	if AddressBar and AddressBar.SetFolder then
+		AddressBar:SetFolder(self.selectedFolderId or Data:GetRootId(), true)
+	end
 	if self.selectedEntryId then
 		local entry = Data:GetEntry(self.selectedEntryId)
 		if entry and not self:IsDirty() then
@@ -523,6 +551,58 @@ end
 local CONTENTS_WIDTH_MIN = 180
 local ENTRY_WIDTH_MIN = 260
 
+--- Address bar fills remaining width; search stays fixed on the right.
+function UI:LayoutNavRow()
+	if not self.navRow or not self.addressCol or not self.searchCol then
+		return
+	end
+	local total = self.navRow.frame and self.navRow.frame:GetWidth() or 0
+	if total < 50 then
+		return
+	end
+	local searchW = 220
+	local gap = 16
+	local addressW = math.max(120, total - searchW - gap)
+	self.addressCol:SetWidth(addressW)
+	self.searchCol:SetWidth(searchW)
+	if self.searchEdit then
+		self.searchEdit:SetWidth(searchW)
+	end
+	self:AlignAddressWithSearch()
+end
+
+--- Keep the address bar vertically aligned with the search input field.
+function UI:AlignAddressWithSearch()
+	local host = self.addressHost and self.addressHost.frame
+	local edit = self.searchEdit and self.searchEdit.editbox
+	local col = self.addressCol and self.addressCol.frame
+	if not host or not edit or not col then
+		return
+	end
+	host:ClearAllPoints()
+	host:SetPoint("LEFT", col, "LEFT", 0, 0)
+	host:SetPoint("RIGHT", col, "RIGHT", 0, 0)
+	host:SetPoint("TOP", edit, "TOP", 0, 0)
+	host:SetPoint("BOTTOM", edit, "BOTTOM", 0, 0)
+end
+
+--- Main body (tree + panes) fills height under the full-width address/search toolbar.
+function UI:LayoutBodyHeight()
+	local shell = self.shellGroup
+	local nav = self.navRow
+	local body = self.bodyGroup
+	if not shell or not nav or not body or not shell.frame then
+		return
+	end
+	local shellH = shell.frame:GetHeight() or 0
+	local navH = (nav.frame and nav.frame:GetHeight()) or 44
+	local height = math.max(120, shellH - navH - 6)
+	body:SetHeight(height)
+	if body.DoLayout then
+		body:DoLayout()
+	end
+end
+
 function UI:SyncPaneWidths()
 	local list = self.listContainer
 	local detail = self.detailContainer
@@ -550,6 +630,8 @@ function UI:SyncPaneWidths()
 	if content.DoLayout then
 		content:DoLayout()
 	end
+	self:LayoutNavRow()
+	self:LayoutBodyHeight()
 end
 
 --- Splitter between Contents and Entry (same interaction as the Folders splitter).
@@ -883,17 +965,6 @@ function UI:RefreshList()
 	spacer:SetText(" ")
 	spacer:SetHeight(8)
 	self.listGroup:AddChild(spacer)
-
-	local pathLabel = AceGUI:Create("Label")
-	pathLabel:SetFullWidth(true)
-	pathLabel:SetText("|cffffd100" .. Data:GetFolderPath(folderId) .. "|r")
-	self.listGroup:AddChild(pathLabel)
-
-	local spacer2 = AceGUI:Create("Label")
-	spacer2:SetFullWidth(true)
-	spacer2:SetText(" ")
-	spacer2:SetHeight(8)
-	self.listGroup:AddChild(spacer2)
 
 	if #entries == 0 then
 		local empty = AceGUI:Create("Label")
@@ -1508,7 +1579,11 @@ function UI:MoveSelectedIntoFolder(entryId)
 end
 
 function UI:FindFolderByNameOrPath(text)
-	-- Exact path match first, then unique name match.
+	-- Slash / hierarchy path first (address-bar style), then display path, then unique name.
+	local resolved = Data:ResolveFolderPath(text)
+	if resolved then
+		return resolved
+	end
 	local lower = text:lower()
 	local nameMatch = nil
 	local nameCount = 0
@@ -2050,13 +2125,22 @@ function UI:CreateWindow()
 			addon():CancelTimer(self.searchTimer)
 			self.searchTimer = nil
 		end
+		if AddressBar and AddressBar.Destroy then
+			AddressBar:Destroy()
+		end
 		AceGUI:Release(widget)
 		self.frame = nil
 		self.treeGroup = nil
 		self._treeSplitter = nil
 		self._contentsSplitter = nil
 		self.contentGroup = nil
+		self.shellGroup = nil
+		self.bodyGroup = nil
 		self.listContainer = nil
+		self.navRow = nil
+		self.addressCol = nil
+		self.searchCol = nil
+		self.addressHost = nil
 		self.detailContainer = nil
 		self.listGroup = nil
 		self.nameEdit = nil
@@ -2070,15 +2154,58 @@ function UI:CreateWindow()
 	end)
 	self.frame = frame
 
-	-- Toolbar
-	local toolbar = AceGUI:Create("SimpleGroup")
-	toolbar:SetFullWidth(true)
-	toolbar:SetLayout("Flow")
-	frame:AddChild(toolbar)
+	-- Shell: full-width address/search on top; tree + panes fill the rest.
+	local shell = AceGUI:Create("SimpleGroup")
+	shell:SetFullWidth(true)
+	shell:SetFullHeight(true)
+	shell:SetAutoAdjustHeight(false)
+	shell:SetLayout("List")
+	frame:AddChild(shell)
+	self.shellGroup = shell
+
+	local navRow = AceGUI:Create("SimpleGroup")
+	navRow:SetFullWidth(true)
+	navRow:SetHeight(44)
+	navRow:SetAutoAdjustHeight(false)
+	navRow:SetLayout("Flow")
+	shell:AddChild(navRow)
+	self.navRow = navRow
+
+	-- Address column (bar is anchored to the search editbox vertically).
+	local addressCol = AceGUI:Create("SimpleGroup")
+	addressCol:SetHeight(44)
+	addressCol:SetAutoAdjustHeight(false)
+	addressCol:SetLayout("Fill")
+	navRow:AddChild(addressCol)
+	self.addressCol = addressCol
+
+	local addressHost = AceGUI:Create("SimpleGroup")
+	addressHost:SetFullWidth(true)
+	addressHost:SetHeight(26)
+	addressHost:SetAutoAdjustHeight(false)
+	addressHost:SetLayout("Fill")
+	addressCol:AddChild(addressHost)
+	self.addressHost = addressHost
+
+	-- Gap between address and search.
+	local navGap = AceGUI:Create("Label")
+	navGap:SetText(" ")
+	navGap:SetWidth(16)
+	navGap:SetHeight(1)
+	navRow:AddChild(navGap)
+
+	-- Search column: label above the field.
+	local searchCol = AceGUI:Create("SimpleGroup")
+	searchCol:SetWidth(220)
+	searchCol:SetHeight(44)
+	searchCol:SetAutoAdjustHeight(false)
+	searchCol:SetLayout("List")
+	navRow:AddChild(searchCol)
+	self.searchCol = searchCol
 
 	local search = AceGUI:Create("EditBox")
-	search:SetLabel("Search")
-	search:SetWidth(260)
+	search:SetLabel("Search Contents")
+	search:SetFullWidth(true)
 	search:DisableButton(true)
 	search:SetCallback("OnEnterPressed", function(widget, event, text)
 		self.searchQuery = text or ""
@@ -2093,7 +2220,6 @@ function UI:CreateWindow()
 				self.searchClearButton:Hide()
 			end
 		end
-		-- Live search with light debounce via timer.
 		if self.searchTimer then
 			addon():CancelTimer(self.searchTimer)
 		end
@@ -2101,10 +2227,9 @@ function UI:CreateWindow()
 			self:RefreshList()
 		end, 0.25)
 	end)
-	toolbar:AddChild(search)
+	searchCol:AddChild(search)
 	self.searchEdit = search
 
-	-- Clear button inside the search box.
 	local clearBtn = CreateFrame("Button", nil, search.editbox)
 	clearBtn:SetSize(16, 16)
 	clearBtn:SetPoint("RIGHT", search.editbox, "RIGHT", -4, 0)
@@ -2124,14 +2249,29 @@ function UI:CreateWindow()
 	clearBtn:Hide()
 	self.searchClearButton = clearBtn
 	search.editbox:SetTextInsets(0, 20, 3, 3)
+	search.editbox:HookScript("OnSizeChanged", function()
+		self:AlignAddressWithSearch()
+	end)
+
+	navRow.frame:HookScript("OnSizeChanged", function()
+		self:LayoutNavRow()
+	end)
+	shell.frame:HookScript("OnSizeChanged", function()
+		self:LayoutNavRow()
+		self:LayoutBodyHeight()
+	end)
+
+	AddressBar:Create(addressHost)
+	AddressBar:SetFolder(self.selectedFolderId or Data:GetRootId(), true)
+	self:AlignAddressWithSearch()
 
 	-- Body: TreeGroup provides left tree; content holds list + detail.
 	local body = AceGUI:Create("SimpleGroup")
 	body:SetFullWidth(true)
-	body:SetFullHeight(true)
 	body:SetAutoAdjustHeight(false)
 	body:SetLayout("Fill")
-	frame:AddChild(body)
+	shell:AddChild(body)
+	self.bodyGroup = body
 
 	local tree = AceGUI:Create("TreeGroup")
 	tree:SetFullWidth(true)
@@ -2178,8 +2318,7 @@ function UI:CreateWindow()
 	self.treeGroup = tree
 	self:EnsureTreeDragger()
 
-	-- Content area inside tree group: two columns.
-	-- Absolute widths (synced by SyncPaneWidths) so a Contents/Entry splitter can resize them.
+	-- Content area inside tree group: Folder contents | Entry.
 	local content = AceGUI:Create("SimpleGroup")
 	content:SetFullWidth(true)
 	content:SetFullHeight(true)

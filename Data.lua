@@ -344,6 +344,193 @@ function Data:GetFolderPath(folderId)
 	return table.concat(parts, " > ")
 end
 
+--- Slash path for address-bar edit mode. Root name is omitted by default.
+--- @param includeRoot boolean|nil when true, prefix with the root folder name
+function Data:GetFolderSlashPath(folderId, includeRoot)
+	local parts = {}
+	local id = folderId
+	local rootId = self:GetRootId()
+	while id do
+		local folder = self:GetFolder(id)
+		if not folder then
+			break
+		end
+		if includeRoot or id ~= rootId then
+			table.insert(parts, 1, folder.name)
+		end
+		id = folder.parentId
+	end
+	return table.concat(parts, "/")
+end
+
+--- Breadcrumb segments from root to folderId: { id, name } in order.
+function Data:GetFolderBreadcrumbs(folderId)
+	local parts = {}
+	local id = folderId or self:GetRootId()
+	while id do
+		local folder = self:GetFolder(id)
+		if not folder then
+			break
+		end
+		table.insert(parts, 1, { id = id, name = folder.name })
+		id = folder.parentId
+	end
+	return parts
+end
+
+--- Normalize a typed path into lowercase path segments (root name stripped).
+function Data:NormalizePathSegments(pathText)
+	if not pathText then
+		return {}
+	end
+	local text = tostring(pathText):match("^%s*(.-)%s*$") or ""
+	text = text:gsub("\\", "/")
+	text = text:gsub("/+", "/")
+	text = text:gsub("^/", ""):gsub("/$", "")
+	if text == "" then
+		return {}
+	end
+	local segments = {}
+	for part in text:gmatch("[^/]+") do
+		segments[#segments + 1] = part
+	end
+	local root = self:GetFolder(self:GetRootId())
+	local rootName = root and root.name and root.name:lower() or "folders"
+	if #segments > 0 and segments[1]:lower() == rootName then
+		table.remove(segments, 1)
+	end
+	return segments
+end
+
+--- Resolve a typed slash path to a folder id (case-insensitive).
+--- Empty / root-only paths resolve to the root folder.
+function Data:ResolveFolderPath(pathText)
+	local segments = self:NormalizePathSegments(pathText)
+	local currentId = self:GetRootId()
+	for _, segment in ipairs(segments) do
+		local parent = self:GetFolder(currentId)
+		if not parent then
+			return nil
+		end
+		local lower = segment:lower()
+		local found
+		for _, childId in ipairs(parent.children) do
+			local child = self:GetFolder(childId)
+			if child and child.name:lower() == lower then
+				found = childId
+				break
+			end
+		end
+		if not found then
+			return nil
+		end
+		currentId = found
+	end
+	return currentId
+end
+
+--- Hierarchical path autocomplete for a partial slash path.
+--- @return suggestions { { path = "Macros/Mage", folderId = "..." }, ... }
+function Data:GetPathCompletions(partialPath, limit)
+	limit = limit or 12
+	local text = tostring(partialPath or ""):match("^%s*(.-)%s*$") or ""
+	text = text:gsub("\\", "/")
+	local trailingSlash = text:match("/$")
+	text = text:gsub("/+", "/")
+	text = text:gsub("^/", "")
+
+	local rawParts = {}
+	if text ~= "" then
+		for part in text:gmatch("[^/]+") do
+			rawParts[#rawParts + 1] = part
+		end
+	end
+
+	local root = self:GetFolder(self:GetRootId())
+	local rootName = root and root.name or "Folders"
+	local rootLower = rootName:lower()
+	local includeRootPrefix = (#rawParts > 0 and rawParts[1]:lower() == rootLower)
+		or (text:lower():match("^" .. rootLower .. "/") ~= nil)
+
+	-- Work with segments relative to root (strip optional root token).
+	local segments = {}
+	for i, part in ipairs(rawParts) do
+		if not (i == 1 and part:lower() == rootLower) then
+			segments[#segments + 1] = part
+		end
+	end
+
+	local prefixSegments = {}
+	local partial = ""
+	if trailingSlash then
+		for _, part in ipairs(segments) do
+			prefixSegments[#prefixSegments + 1] = part
+		end
+	elseif #segments > 0 then
+		for i = 1, #segments - 1 do
+			prefixSegments[#prefixSegments + 1] = segments[i]
+		end
+		partial = segments[#segments] or ""
+	end
+
+	local parentId = self:GetRootId()
+	for _, segment in ipairs(prefixSegments) do
+		local parent = self:GetFolder(parentId)
+		if not parent then
+			return {}
+		end
+		local lower = segment:lower()
+		local found
+		for _, childId in ipairs(parent.children) do
+			local child = self:GetFolder(childId)
+			if child and child.name:lower() == lower then
+				found = childId
+				break
+			end
+		end
+		if not found then
+			return {}
+		end
+		parentId = found
+	end
+
+	local parent = self:GetFolder(parentId)
+	if not parent then
+		return {}
+	end
+
+	local partialLower = partial:lower()
+	local matches = {}
+	for _, childId in ipairs(parent.children) do
+		local child = self:GetFolder(childId)
+		if child then
+			local name = child.name
+			if partialLower == "" or name:lower():sub(1, #partialLower) == partialLower then
+				local pathParts = {}
+				for _, seg in ipairs(prefixSegments) do
+					pathParts[#pathParts + 1] = seg
+				end
+				pathParts[#pathParts + 1] = name
+				local path = table.concat(pathParts, "/")
+				if includeRootPrefix then
+					path = rootName .. "/" .. path
+				end
+				matches[#matches + 1] = { path = path, folderId = childId, name = name }
+			end
+		end
+	end
+
+	table.sort(matches, function(a, b)
+		return a.name:lower() < b.name:lower()
+	end)
+
+	local results = {}
+	for i = 1, math.min(limit, #matches) do
+		results[i] = matches[i]
+	end
+	return results
+end
+
 function Data:GetEntryPath(entryId)
 	local entry = self:GetEntry(entryId)
 	if not entry then
