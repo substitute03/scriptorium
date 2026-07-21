@@ -86,13 +86,12 @@ end
 
 --- Import/reconcile Blizzard macros into the managed folder tree.
 --- Creates General Macros and Character Macros/<Realm>/<Character>, then reconciles.
---- @return summary table
 function MacroBridge:SyncFromBlizzard()
 	local rootId = Data:GetRootId()
 	Data:PruneUnmanagedRootFolders()
 
 	local generalId = Data:EnsureFolder(rootId, Data.GENERAL_MACROS_NAME)
-	local gAdded, gUpdated, gRemoved = Data:ReconcileFolderMacros(generalId, self:ListMacros(false))
+	Data:ReconcileFolderMacros(generalId, self:ListMacros(false))
 
 	local charRootId = Data:EnsureFolder(rootId, Data.CHARACTER_MACROS_NAME)
 	local realmName = getRealmName()
@@ -103,7 +102,7 @@ function MacroBridge:SyncFromBlizzard()
 	if charFolder and classFile then
 		charFolder.classFile = classFile
 	end
-	local cAdded, cUpdated, cRemoved = Data:ReconcileFolderMacros(charId, self:ListMacros(true))
+	Data:ReconcileFolderMacros(charId, self:ListMacros(true))
 
 	Data.db.global.version = 2
 
@@ -114,8 +113,6 @@ function MacroBridge:SyncFromBlizzard()
 		characterRootId = charRootId,
 		realmName = realmName,
 		characterName = charName,
-		general = { added = gAdded, updated = gUpdated, removed = gRemoved },
-		character = { added = cAdded, updated = cUpdated, removed = cRemoved },
 	}
 end
 

@@ -70,14 +70,7 @@ function Scriptorium:SyncMacros(notify)
 	end
 
 	if notify then
-		local g = summary.general
-		local c = summary.character
-		local message = string.format(
-			"Imported macros — General: +%d ~%d -%d; %s/%s: +%d ~%d -%d.",
-			g.added, g.updated, g.removed,
-			summary.realmName, summary.characterName,
-			c.added, c.updated, c.removed
-		)
+		local message = "Macros updated successfully."
 		self:Notify(message)
 		if ns.UI and ns.UI.SetStatus then
 			ns.UI:SetStatus(message)

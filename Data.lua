@@ -68,9 +68,10 @@ function Data:_EnsureSchema()
 	if g.syncOnMacroUpdate == nil then
 		g.syncOnMacroUpdate = true
 	end
-	-- Drop legacy description field from existing macros.
+	-- Drop legacy description / syncKey fields from existing macros.
 	for _, entry in pairs(g.entries) do
 		entry.description = nil
+		entry.syncKey = nil
 	end
 end
 
@@ -337,17 +338,13 @@ function Data:FindEntryByNameInFolder(folderId, name)
 end
 
 --- Reconcile a folder's macros against a Blizzard macro list (add/update/delete).
---- @param macros { { name, icon, body }, ... }
---- @return added, updated, removed
 function Data:ReconcileFolderMacros(folderId, macros)
 	local folder = self:GetFolder(folderId)
 	if not folder then
-		return 0, 0, 0
+		return
 	end
 
 	local seen = {}
-	local added, updated = 0, 0
-
 	for _, macro in ipairs(macros or {}) do
 		local name = macro.name
 		if name and name ~= "" then
@@ -356,14 +353,10 @@ function Data:ReconcileFolderMacros(folderId, macros)
 			local entryId, entry = self:FindEntryByNameInFolder(folderId, name)
 			if entry then
 				seen[entryId] = true
-				local needsUpdate = entry.icon ~= icon or entry.text ~= body
-				if needsUpdate then
-					self:UpdateEntry(entryId, {
-						icon = icon,
-						text = body,
-					})
-					updated = updated + 1
-				end
+				self:UpdateEntry(entryId, {
+					icon = icon,
+					text = body,
+				})
 			else
 				local newId = self:CreateEntry(folderId, name)
 				if newId then
@@ -372,13 +365,11 @@ function Data:ReconcileFolderMacros(folderId, macros)
 						text = body,
 					})
 					seen[newId] = true
-					added = added + 1
 				end
 			end
 		end
 	end
 
-	local removed = 0
 	local toDelete = {}
 	for _, entryId in ipairs(folder.entries) do
 		if not seen[entryId] then
@@ -387,10 +378,7 @@ function Data:ReconcileFolderMacros(folderId, macros)
 	end
 	for _, entryId in ipairs(toDelete) do
 		self:DeleteEntry(entryId)
-		removed = removed + 1
 	end
-
-	return added, updated, removed
 end
 
 function Data:GetFolderPath(folderId)

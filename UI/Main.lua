@@ -1667,7 +1667,7 @@ function UI:CreateWindow()
 	self.searchCol = searchCol
 
 	local search = AceGUI:Create("EditBox")
-	search:SetLabel("Search Macros")
+	search:SetLabel("Search macros")
 	search:SetFullWidth(true)
 	search:DisableButton(true)
 	search:SetCallback("OnEnterPressed", function(widget, event, text)
@@ -1788,6 +1788,25 @@ function UI:CreateWindow()
 	self.treeGroup = tree
 	self:EnsureTreeDragger()
 
+	-- Remove only the shared parent panel around both right-hand sections.
+	-- Folder contents and Macro keep their own InlineGroup panels.
+	if tree.border then
+		if tree.border.SetBackdropColor then
+			tree.border:SetBackdropColor(0, 0, 0, 0)
+		end
+		if tree.border.SetBackdropBorderColor then
+			tree.border:SetBackdropBorderColor(0, 0, 0, 0)
+		end
+		if tree.border.SetBackdrop then
+			tree.border:SetBackdrop(nil)
+		end
+	end
+	if tree.content and tree.border then
+		tree.content:ClearAllPoints()
+		tree.content:SetPoint("TOPLEFT", tree.border, "TOPLEFT", 4, 0)
+		tree.content:SetPoint("BOTTOMRIGHT", tree.border, "BOTTOMRIGHT", -2, 0)
+	end
+
 	local content = AceGUI:Create("SimpleGroup")
 	content:SetFullWidth(true)
 	content:SetFullHeight(true)
@@ -1858,7 +1877,7 @@ function UI:CreateWindow()
 	self.iconWidget = icon
 
 	local bodyEdit = AceGUI:Create("MultiLineEditBox")
-	bodyEdit:SetLabel("Macro Body")
+	bodyEdit:SetLabel("Macro body")
 	bodyEdit:SetFullWidth(true)
 	bodyEdit:SetNumLines(14)
 	bodyEdit:DisableButton(true)

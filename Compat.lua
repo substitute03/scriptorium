@@ -81,7 +81,7 @@ function Compat.NormalizeIcon(icon)
 			return asNumber
 		end
 		-- Strip Interface\Icons\ prefix if present for display consistency.
-		icon = icon:gsub("^[Ii][Nn][Tt][Ee][Rr][Ff][Aa][Cc][Ee]\\[Ii][Cc][Oo][Nn][Ss]\\", "")
+		icon = icon:gsub("^[Ii][Nn][Tt][Ee][Rr][Ff][Aa][Cc][Ee][/\\][Ii][Cc][Oo][Nn][Ss][/\\]", "")
 		icon = icon:gsub("%.blp$", "")
 	end
 	return icon
