@@ -3,7 +3,7 @@
 ## Interface-Cata: 40402
 ## Interface-Mists: 50504
 ## Title: Scriptorium
-## Notes: Account-wide file explorer for storing and organising macros and text.
+## Notes: Browse and sync Blizzard macros. Account-wide mirror with export to characters.
 ## Author: Scriptorium
 ## Version: 1.0.0
 ## SavedVariables: ScriptoriumDB

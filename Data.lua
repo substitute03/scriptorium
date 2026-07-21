@@ -1,5 +1,6 @@
 --- Data.lua
---- Repository model: folders + entries (account-wide via AceDB global).
+--- Folder + macro repository (account-wide via AceDB global).
+--- Tree is a mirror of Blizzard macros; Blizzard remains the source of truth.
 local ADDON_NAME, ns = ...
 local Compat = ns.Compat
 
@@ -7,24 +8,28 @@ local Data = {}
 ns.Data = Data
 
 local ROOT_ID = "root"
+Data.GENERAL_MACROS_NAME = "General Macros"
+Data.CHARACTER_MACROS_NAME = "Character Macros"
 
 local defaults = {
 	global = {
-		version = 1,
+		version = 2,
 		nextId = 1,
 		sortMode = "name", -- "name" | "modified"
+		syncOnLogin = true,
+		syncOnMacroUpdate = true,
 		rootId = ROOT_ID,
 		folders = {
 			[ROOT_ID] = {
 				id = ROOT_ID,
-				name = "Folders",
+				name = "Macros",
 				parentId = nil,
-				children = {}, -- ordered folder ids
-				entries = {}, -- ordered entry ids
+				children = {},
+				entries = {},
 			},
 		},
 		entries = {
-			-- [id] = { id, name, icon, description, text, created, modified, parentId }
+			-- [id] = { id, name, icon, text, created, modified, parentId }
 		},
 	},
 }
@@ -43,20 +48,30 @@ function Data:_EnsureSchema()
 	if not g.folders[ROOT_ID] then
 		g.folders[ROOT_ID] = {
 			id = ROOT_ID,
-			name = "Folders",
+			name = "Macros",
 			parentId = nil,
 			children = {},
 			entries = {},
 		}
 	else
-		-- Root is a container for folders only, not entries.
-		g.folders[ROOT_ID].name = g.folders[ROOT_ID].name or "Folders"
+		g.folders[ROOT_ID].name = "Macros"
 		g.folders[ROOT_ID].entries = g.folders[ROOT_ID].entries or {}
 	end
 	g.rootId = ROOT_ID
 	g.entries = g.entries or {}
 	g.nextId = g.nextId or 1
 	g.sortMode = g.sortMode or "name"
+	g.version = g.version or 1
+	if g.syncOnLogin == nil then
+		g.syncOnLogin = true
+	end
+	if g.syncOnMacroUpdate == nil then
+		g.syncOnMacroUpdate = true
+	end
+	-- Drop legacy description field from existing macros.
+	for _, entry in pairs(g.entries) do
+		entry.description = nil
+	end
 end
 
 function Data:_NextId(prefix)
@@ -80,6 +95,30 @@ function Data:SetSortMode(mode)
 	end
 end
 
+function Data:GetSyncOnLogin()
+	local v = self.db.global.syncOnLogin
+	if v == nil then
+		return true
+	end
+	return v and true or false
+end
+
+function Data:SetSyncOnLogin(enabled)
+	self.db.global.syncOnLogin = enabled and true or false
+end
+
+function Data:GetSyncOnMacroUpdate()
+	local v = self.db.global.syncOnMacroUpdate
+	if v == nil then
+		return true
+	end
+	return v and true or false
+end
+
+function Data:SetSyncOnMacroUpdate(enabled)
+	self.db.global.syncOnMacroUpdate = enabled and true or false
+end
+
 function Data:GetFolder(id)
 	return self.db.global.folders[id]
 end
@@ -89,7 +128,7 @@ function Data:GetEntry(id)
 end
 
 --- True if parent already has a child folder with this name (case-insensitive).
---- @param excludeId string|nil folder id to ignore (for rename)
+--- @param excludeId string|nil folder id to ignore
 function Data:FolderNameExistsInParent(parentId, name, excludeId)
 	local parent = self:GetFolder(parentId)
 	if not parent or not name then
@@ -105,6 +144,35 @@ function Data:FolderNameExistsInParent(parentId, name, excludeId)
 		end
 	end
 	return false
+end
+
+--- Find a direct child folder by name (case-insensitive).
+function Data:FindChildFolderByName(parentId, name)
+	local parent = self:GetFolder(parentId)
+	if not parent or not name then
+		return nil
+	end
+	local lower = name:lower()
+	for _, childId in ipairs(parent.children) do
+		local child = self:GetFolder(childId)
+		if child and child.name:lower() == lower then
+			return childId, child
+		end
+	end
+	return nil
+end
+
+--- Find or create a child folder with the given name.
+function Data:EnsureFolder(parentId, name)
+	local existingId, existing = self:FindChildFolderByName(parentId, name)
+	if existingId then
+		-- Keep the canonical display name.
+		if existing.name ~= name then
+			existing.name = name
+		end
+		return existingId, existing
+	end
+	return self:CreateFolder(parentId, name)
 end
 
 function Data:CreateFolder(parentId, name)
@@ -127,30 +195,10 @@ function Data:CreateFolder(parentId, name)
 		parentId = parentId,
 		children = {},
 		entries = {},
-		-- Future: tags, colour, etc.
 	}
 	self.db.global.folders[id] = folder
 	parent.children[#parent.children + 1] = id
 	return id, folder
-end
-
-function Data:RenameFolder(id, name)
-	if id == self:GetRootId() then
-		return false, "Cannot rename the root folder"
-	end
-	local folder = self:GetFolder(id)
-	if not folder then
-		return false, "Folder not found"
-	end
-	name = name and name:match("^%s*(.-)%s*$") or ""
-	if name == "" then
-		return false, "Name cannot be empty"
-	end
-	if self:FolderNameExistsInParent(folder.parentId, name, id) then
-		return false, string.format("A folder named \"%s\" already exists here.", name)
-	end
-	folder.name = name
-	return true
 end
 
 function Data:DeleteFolder(id)
@@ -162,7 +210,6 @@ function Data:DeleteFolder(id)
 		return false, "Folder not found"
 	end
 
-	-- Recursively delete children and entries (copy lists first).
 	local childIds = {}
 	for i, childId in ipairs(folder.children) do
 		childIds[i] = childId
@@ -186,53 +233,39 @@ function Data:DeleteFolder(id)
 	return true
 end
 
-function Data:MoveFolder(id, newParentId, index)
-	if id == self:GetRootId() then
-		return false, "Cannot move the root folder"
+--- Remove root-level folders that are not part of the managed macro layout.
+function Data:PruneUnmanagedRootFolders()
+	local root = self:GetFolder(self:GetRootId())
+	if not root then
+		return
 	end
-	local folder = self:GetFolder(id)
-	local newParent = self:GetFolder(newParentId)
-	if not folder or not newParent then
-		return false, "Folder not found"
-	end
-	if id == newParentId then
-		return false, "Cannot move a folder into itself"
-	end
-	-- Prevent moving into a descendant.
-	local walk = newParentId
-	while walk do
-		if walk == id then
-			return false, "Cannot move a folder into its descendant"
+	local keep = {
+		[self.GENERAL_MACROS_NAME:lower()] = true,
+		[self.CHARACTER_MACROS_NAME:lower()] = true,
+	}
+	local toDelete = {}
+	for _, childId in ipairs(root.children) do
+		local child = self:GetFolder(childId)
+		if child and not keep[child.name:lower()] then
+			toDelete[#toDelete + 1] = childId
 		end
-		local f = self:GetFolder(walk)
-		walk = f and f.parentId
 	end
-
-	local oldParent = self:GetFolder(folder.parentId)
-	if newParentId ~= folder.parentId and self:FolderNameExistsInParent(newParentId, folder.name) then
-		return false, string.format("A folder named \"%s\" already exists here.", folder.name)
+	for _, childId in ipairs(toDelete) do
+		self:DeleteFolder(childId)
 	end
-	if oldParent then
-		self:_RemoveFromList(oldParent.children, id)
-	end
-	folder.parentId = newParentId
-	index = index or (#newParent.children + 1)
-	index = math.max(1, math.min(index, #newParent.children + 1))
-	table.insert(newParent.children, index, id)
-	return true
 end
 
 function Data:CreateEntry(parentId, name)
 	if parentId == self:GetRootId() then
-		return nil, "Cannot add entries to the root Folders node"
+		return nil, "Cannot add macros to the root Macros node"
 	end
 	local parent = self:GetFolder(parentId)
 	if not parent then
 		return nil, "Parent folder not found"
 	end
-	name = name and name:match("^%s*(.-)%s*$") or "New Entry"
+	name = name and name:match("^%s*(.-)%s*$") or "New Macro"
 	if name == "" then
-		name = "New Entry"
+		name = "New Macro"
 	end
 
 	local now = Compat.GetTime()
@@ -241,12 +274,10 @@ function Data:CreateEntry(parentId, name)
 		id = id,
 		name = name,
 		icon = Compat.DefaultIcon(),
-		description = "",
 		text = "",
 		created = now,
 		modified = now,
 		parentId = parentId,
-		-- Future: tags = {}, favourite = false, history = {}, template = false
 	}
 	self.db.global.entries[id] = entry
 	parent.entries[#parent.entries + 1] = id
@@ -256,7 +287,7 @@ end
 function Data:UpdateEntry(id, fields)
 	local entry = self:GetEntry(id)
 	if not entry then
-		return false, "Entry not found"
+		return false, "Macro not found"
 	end
 	if fields.name ~= nil then
 		local name = tostring(fields.name):match("^%s*(.-)%s*$")
@@ -268,9 +299,6 @@ function Data:UpdateEntry(id, fields)
 	if fields.icon ~= nil then
 		entry.icon = Compat.NormalizeIcon(fields.icon)
 	end
-	if fields.description ~= nil then
-		entry.description = fields.description
-	end
 	if fields.text ~= nil then
 		entry.text = fields.text
 	end
@@ -281,7 +309,7 @@ end
 function Data:DeleteEntry(id, skipParentUpdate)
 	local entry = self:GetEntry(id)
 	if not entry then
-		return false, "Entry not found"
+		return false, "Macro not found"
 	end
 	if not skipParentUpdate then
 		local parent = self:GetFolder(entry.parentId)
@@ -293,41 +321,76 @@ function Data:DeleteEntry(id, skipParentUpdate)
 	return true
 end
 
-function Data:DuplicateEntry(id)
-	local entry = self:GetEntry(id)
-	if not entry then
-		return nil, "Entry not found"
+--- Find a macro entry in a folder by exact name.
+function Data:FindEntryByNameInFolder(folderId, name)
+	local folder = self:GetFolder(folderId)
+	if not folder or not name then
+		return nil
 	end
-	local newId, newEntry = self:CreateEntry(entry.parentId, entry.name .. " Copy")
-	if not newId then
-		return nil, newEntry
+	for _, entryId in ipairs(folder.entries) do
+		local entry = self:GetEntry(entryId)
+		if entry and entry.name == name then
+			return entryId, entry
+		end
 	end
-	newEntry.icon = entry.icon
-	newEntry.description = entry.description
-	newEntry.text = entry.text
-	newEntry.modified = Compat.GetTime()
-	return newId, newEntry
+	return nil
 end
 
-function Data:MoveEntry(id, newParentId, index)
-	if newParentId == self:GetRootId() then
-		return false, "Cannot move entries into the root Folders node"
+--- Reconcile a folder's macros against a Blizzard macro list (add/update/delete).
+--- @param macros { { name, icon, body }, ... }
+--- @return added, updated, removed
+function Data:ReconcileFolderMacros(folderId, macros)
+	local folder = self:GetFolder(folderId)
+	if not folder then
+		return 0, 0, 0
 	end
-	local entry = self:GetEntry(id)
-	local newParent = self:GetFolder(newParentId)
-	if not entry or not newParent then
-		return false, "Not found"
+
+	local seen = {}
+	local added, updated = 0, 0
+
+	for _, macro in ipairs(macros or {}) do
+		local name = macro.name
+		if name and name ~= "" then
+			local icon = Compat.NormalizeIcon(macro.icon)
+			local body = macro.body or ""
+			local entryId, entry = self:FindEntryByNameInFolder(folderId, name)
+			if entry then
+				seen[entryId] = true
+				local needsUpdate = entry.icon ~= icon or entry.text ~= body
+				if needsUpdate then
+					self:UpdateEntry(entryId, {
+						icon = icon,
+						text = body,
+					})
+					updated = updated + 1
+				end
+			else
+				local newId = self:CreateEntry(folderId, name)
+				if newId then
+					self:UpdateEntry(newId, {
+						icon = icon,
+						text = body,
+					})
+					seen[newId] = true
+					added = added + 1
+				end
+			end
+		end
 	end
-	local oldParent = self:GetFolder(entry.parentId)
-	if oldParent then
-		self:_RemoveFromList(oldParent.entries, id)
+
+	local removed = 0
+	local toDelete = {}
+	for _, entryId in ipairs(folder.entries) do
+		if not seen[entryId] then
+			toDelete[#toDelete + 1] = entryId
+		end
 	end
-	entry.parentId = newParentId
-	entry.modified = Compat.GetTime()
-	index = index or (#newParent.entries + 1)
-	index = math.max(1, math.min(index, #newParent.entries + 1))
-	table.insert(newParent.entries, index, id)
-	return true
+	for _, entryId in ipairs(toDelete) do
+		self:DeleteEntry(entryId)
+		removed = removed + 1
+	end
+
+	return added, updated, removed
 end
 
 function Data:GetFolderPath(folderId)
@@ -345,7 +408,6 @@ function Data:GetFolderPath(folderId)
 end
 
 --- Slash path for address-bar edit mode. Root name is omitted by default.
---- @param includeRoot boolean|nil when true, prefix with the root folder name
 function Data:GetFolderSlashPath(folderId, includeRoot)
 	local parts = {}
 	local id = folderId
@@ -378,7 +440,6 @@ function Data:GetFolderBreadcrumbs(folderId)
 	return parts
 end
 
---- Normalize a typed path into lowercase path segments (root name stripped).
 function Data:NormalizePathSegments(pathText)
 	if not pathText then
 		return {}
@@ -395,15 +456,13 @@ function Data:NormalizePathSegments(pathText)
 		segments[#segments + 1] = part
 	end
 	local root = self:GetFolder(self:GetRootId())
-	local rootName = root and root.name and root.name:lower() or "folders"
+	local rootName = root and root.name and root.name:lower() or "macros"
 	if #segments > 0 and segments[1]:lower() == rootName then
 		table.remove(segments, 1)
 	end
 	return segments
 end
 
---- Resolve a typed slash path to a folder id (case-insensitive).
---- Empty / root-only paths resolve to the root folder.
 function Data:ResolveFolderPath(pathText)
 	local segments = self:NormalizePathSegments(pathText)
 	local currentId = self:GetRootId()
@@ -430,7 +489,6 @@ function Data:ResolveFolderPath(pathText)
 end
 
 --- Hierarchical path autocomplete for a partial slash path.
---- @return suggestions { { path = "Macros/Mage", folderId = "..." }, ... }
 function Data:GetPathCompletions(partialPath, limit)
 	limit = limit or 12
 	local text = tostring(partialPath or ""):match("^%s*(.-)%s*$") or ""
@@ -447,12 +505,11 @@ function Data:GetPathCompletions(partialPath, limit)
 	end
 
 	local root = self:GetFolder(self:GetRootId())
-	local rootName = root and root.name or "Folders"
+	local rootName = root and root.name or "Macros"
 	local rootLower = rootName:lower()
 	local includeRootPrefix = (#rawParts > 0 and rawParts[1]:lower() == rootLower)
 		or (text:lower():match("^" .. rootLower .. "/") ~= nil)
 
-	-- Work with segments relative to root (strip optional root token).
 	local segments = {}
 	for i, part in ipairs(rawParts) do
 		if not (i == 1 and part:lower() == rootLower) then
@@ -539,29 +596,40 @@ function Data:GetEntryPath(entryId)
 	return self:GetFolderPath(entry.parentId)
 end
 
---- Collect entries in a folder, optionally walking child folders depth-first.
-function Data:CollectEntries(folderId, includeChildren)
+--- True if this folder is a character leaf under Character Macros / <Realm>.
+function Data:IsCharacterFolder(folderId)
+	local folder = self:GetFolder(folderId)
+	if not folder or folderId == self:GetRootId() then
+		return false
+	end
+	if #(folder.children or {}) > 0 then
+		return false
+	end
+	local realm = self:GetFolder(folder.parentId)
+	if not realm then
+		return false
+	end
+	local charRoot = self:GetFolder(realm.parentId)
+	if not charRoot or charRoot.name ~= self.CHARACTER_MACROS_NAME then
+		return false
+	end
+	local root = self:GetFolder(charRoot.parentId)
+	return root ~= nil and root.id == self:GetRootId()
+end
+
+--- Collect macros in a folder (leaf folders only; no recursion).
+function Data:CollectEntries(folderId)
 	local results = {}
-	local function walk(id)
-		local folder = self:GetFolder(id)
-		if not folder then
-			return
-		end
-		if id ~= self:GetRootId() then
-			for _, entryId in ipairs(folder.entries) do
-				local entry = self:GetEntry(entryId)
-				if entry then
-					results[#results + 1] = entry
-				end
-			end
-		end
-		if includeChildren then
-			for _, childId in ipairs(folder.children) do
-				walk(childId)
-			end
+	local folder = self:GetFolder(folderId)
+	if not folder or folderId == self:GetRootId() then
+		return results
+	end
+	for _, entryId in ipairs(folder.entries) do
+		local entry = self:GetEntry(entryId)
+		if entry then
+			results[#results + 1] = entry
 		end
 	end
-	walk(folderId)
 	return results
 end
 
@@ -611,27 +679,40 @@ function Data:GetSortedChildren(folderId)
 end
 
 function Data:BuildTree()
+	local classIconTexture = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
+
 	local function buildNode(folderId)
 		local folder = self:GetFolder(folderId)
 		if not folder then
 			return nil
 		end
 		local isRoot = folderId == self:GetRootId()
-		local entryCount = 0
-		if not isRoot then
+		local isLeaf = #(folder.children or {}) == 0
+		local text
+		if isRoot then
+			text = "|cffffd100" .. folder.name .. "|r"
+		elseif isLeaf then
+			local entryCount = 0
 			for _, entryId in ipairs(folder.entries) do
 				if self:GetEntry(entryId) then
 					entryCount = entryCount + 1
 				end
 			end
+			text = string.format("%s (%d)", folder.name, entryCount)
+		else
+			text = folder.name
 		end
 		local node = {
 			value = folderId,
-			text = isRoot and ("|cffffd100" .. folder.name .. "|r") or string.format("%s (%d)", folder.name, entryCount),
+			text = text,
 		}
+		-- Character folders store classFile from login sync.
+		if folder.classFile and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[folder.classFile] then
+			node.icon = classIconTexture
+			node.iconCoords = CLASS_ICON_TCOORDS[folder.classFile]
+		end
 		if #folder.children > 0 then
 			node.children = {}
-			-- Preserve stored order for tree; sort alphabetically for consistency.
 			local kids = {}
 			for _, childId in ipairs(folder.children) do
 				local child = self:GetFolder(childId)
@@ -639,8 +720,17 @@ function Data:BuildTree()
 					kids[#kids + 1] = child
 				end
 			end
+			local function folderSortKey(f)
+				if f.name == self.GENERAL_MACROS_NAME then
+					return "0"
+				end
+				if f.name == self.CHARACTER_MACROS_NAME then
+					return "1"
+				end
+				return "2" .. f.name:lower()
+			end
 			table.sort(kids, function(a, b)
-				return a.name:lower() < b.name:lower()
+				return folderSortKey(a) < folderSortKey(b)
 			end)
 			for _, child in ipairs(kids) do
 				local childNode = buildNode(child.id)
@@ -664,13 +754,4 @@ function Data:_RemoveFromList(list, id)
 		end
 	end
 	return false
-end
-
-function Data:_IndexOf(list, id)
-	for i, v in ipairs(list) do
-		if v == id then
-			return i
-		end
-	end
-	return nil
 end

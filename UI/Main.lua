@@ -1,5 +1,6 @@
 --- UI/Main.lua
---- Three-pane file explorer: folder tree | contents list | entry editor.
+--- Read-only macro browser: folder tree | macro list | macro viewer.
+--- Blizzard macros are the source of truth; this UI mirrors and exports them.
 local ADDON_NAME, ns = ...
 
 local AceGUI = LibStub("AceGUI-3.0")
@@ -23,8 +24,6 @@ end
 UI.selectedFolderId = nil
 UI.selectedEntryId = nil
 UI.searchQuery = ""
-UI.dirty = false
-UI.draft = nil -- unsaved field values for selected entry
 UI.statusText = ""
 
 ------------------------------------------------------------------------
@@ -38,118 +37,156 @@ function UI:SetStatus(text)
 	end
 end
 
-function UI:IsDirty()
-	return self.dirty
-end
-
-function UI:MarkDirty()
-	self.dirty = true
-	if self.saveButton then
-		self.saveButton:SetDisabled(false)
-	end
-end
-
-function UI:ClearDirty()
-	self.dirty = false
-	if self.saveButton then
-		self.saveButton:SetDisabled(true)
-	end
-end
-
-function UI:CaptureDraftFromWidgets()
-	if not self.selectedEntryId then
-		self.draft = nil
-		return
-	end
-	self.draft = {
-		name = self.nameEdit and self.nameEdit:GetText() or "",
-		description = self.descEdit and self.descEdit:GetText() or "",
-		text = self.bodyEdit and self.bodyEdit:GetText() or "",
-		icon = self.currentIcon or Compat.DefaultIcon(),
-	}
-end
-
-function UI:LoadEntryIntoEditor(entry)
-	self.suppressDirty = true
+function UI:LoadMacroIntoViewer(entry)
 	self.currentIcon = entry and Compat.NormalizeIcon(entry.icon) or Compat.DefaultIcon()
+	self._suppressReadOnlyGuard = true
+	self._lockedName = entry and entry.name or ""
+	self._lockedBody = entry and entry.text or ""
+	local hasMacro = entry ~= nil
 	if self.nameEdit then
-		self.nameEdit:SetText(entry and entry.name or "")
-	end
-	if self.descEdit then
-		self.descEdit:SetText(entry and entry.description or "")
+		self.nameEdit:SetText(self._lockedName)
+		self:ApplyReadOnlyAppearance(self.nameEdit, hasMacro)
 	end
 	if self.bodyEdit then
-		self.bodyEdit:SetText(entry and entry.text or "")
+		self.bodyEdit:SetText(self._lockedBody)
+		self:ApplyReadOnlyAppearance(self.bodyEdit, hasMacro)
 	end
+	self._suppressReadOnlyGuard = false
 	if self.iconWidget then
 		self.iconWidget:SetImage(Compat.GetIconTexture(self.currentIcon))
+		if self.iconWidget.SetDisabled then
+			self.iconWidget:SetDisabled(not hasMacro)
+		elseif self.iconWidget.image then
+			if hasMacro then
+				self.iconWidget.image:SetVertexColor(1, 1, 1)
+			else
+				self.iconWidget.image:SetVertexColor(0.5, 0.5, 0.5)
+			end
+		end
 	end
-	local enabled = entry ~= nil
-	if self.nameEdit then self.nameEdit:SetDisabled(not enabled) end
-	if self.descEdit then self.descEdit:SetDisabled(not enabled) end
-	if self.bodyEdit then self.bodyEdit:SetDisabled(not enabled) end
-	if self.iconButton then self.iconButton:SetDisabled(not enabled) end
-	if self.macroButton then self.macroButton:SetDisabled(not enabled) end
-	if self.dupEntryButton then self.dupEntryButton:SetDisabled(not enabled) end
-	if self.delEntryButton then self.delEntryButton:SetDisabled(not enabled) end
-	self:ClearDirty()
-	self.suppressDirty = false
-	self:CaptureDraftFromWidgets()
+	if self.macroButton then
+		self.macroButton:SetDisabled(not hasMacro)
+	end
 end
 
-function UI:SaveCurrentEntry()
-	if not self.selectedEntryId then
-		return false
-	end
-	self:CaptureDraftFromWidgets()
-	local ok, err = Data:UpdateEntry(self.selectedEntryId, self.draft)
-	if not ok then
-		addon():Notify(err or "Save failed.", true)
-		return false
-	end
-	self:ClearDirty()
-	self:SetStatus("Saved.")
-	self:RefreshAll()
-	return true
-end
-
-function UI:WithUnsavedGuard(action)
-	if not self:IsDirty() then
-		action()
+--- Read-only fields: white + selectable when a macro is selected; greyed out otherwise.
+function UI:ApplyReadOnlyAppearance(widget, active)
+	if not widget then
 		return
 	end
-	addon():ConfirmUnsaved(function()
-		self:ClearDirty()
-		action()
-	end)
+	-- Do not use AceGUI SetDisabled for the active state — that blocks selection/copy.
+	if widget.SetDisabled then
+		widget:SetDisabled(false)
+	end
+	local editBox = widget.editbox or widget.editBox
+	if editBox then
+		if active then
+			editBox:EnableMouse(true)
+			if editBox.EnableKeyboard then
+				editBox:EnableKeyboard(true)
+			end
+			editBox:SetTextColor(1, 1, 1)
+		else
+			editBox:ClearFocus()
+			editBox:EnableMouse(false)
+			if editBox.EnableKeyboard then
+				editBox:EnableKeyboard(false)
+			end
+			editBox:SetTextColor(0.5, 0.5, 0.5)
+		end
+	end
+	if widget.label then
+		if active then
+			widget.label:SetTextColor(1, 0.82, 0)
+		else
+			widget.label:SetTextColor(0.5, 0.5, 0.5)
+		end
+	end
+	local scrollFrame = widget.scrollFrame
+	if scrollFrame then
+		scrollFrame:EnableMouse(active and true or false)
+		scrollFrame:EnableMouseWheel(active and true or false)
+	end
+end
+
+function UI:SetupReadOnlyFields()
+	local nameEdit = self.nameEdit
+	if nameEdit then
+		if nameEdit.DisableButton then
+			nameEdit:DisableButton(true)
+		end
+		self:ApplyReadOnlyAppearance(nameEdit, false)
+		nameEdit:SetCallback("OnTextChanged", function(_, _, value)
+			if self._suppressReadOnlyGuard then
+				return
+			end
+			local locked = self._lockedName or ""
+			if tostring(value or "") ~= locked then
+				self._suppressReadOnlyGuard = true
+				nameEdit:SetText(locked)
+				self._suppressReadOnlyGuard = false
+			end
+		end)
+	end
+
+	local body = self.bodyEdit
+	if body then
+		body:DisableButton(true)
+		self:ApplyReadOnlyAppearance(body, false)
+
+		-- Allow click-to-focus/select when active, but block drag-insert of spells/items.
+		local editBox = body.editBox
+		if editBox then
+			editBox:SetScript("OnMouseDown", nil)
+			editBox:SetScript("OnReceiveDrag", nil)
+			editBox:SetScript("OnTextChanged", function(eb, userInput)
+				if self._suppressReadOnlyGuard or not userInput then
+					return
+				end
+				local locked = self._lockedBody or ""
+				if eb:GetText() ~= locked then
+					self._suppressReadOnlyGuard = true
+					local cursor = eb:GetCursorPosition()
+					eb:SetText(locked)
+					eb:SetCursorPosition(math.min(cursor or 0, #locked))
+					self._suppressReadOnlyGuard = false
+				end
+			end)
+		end
+
+		local scrollFrame = body.scrollFrame
+		if scrollFrame then
+			scrollFrame:SetScript("OnReceiveDrag", nil)
+			-- Keep AceGUI focus-on-click so the user can select text to copy when active.
+			scrollFrame:SetScript("OnMouseUp", function(sf)
+				if not self.selectedEntryId then
+					return
+				end
+				local eb = sf.obj and sf.obj.editBox
+				if eb then
+					eb:SetFocus()
+				end
+			end)
+		end
+	end
 end
 
 ------------------------------------------------------------------------
 -- Selection
 ------------------------------------------------------------------------
 
-function UI:SelectFolder(folderId, skipGuard)
-	local function doSelect()
-		self.selectedFolderId = folderId or Data:GetRootId()
-		self.selectedEntryId = nil
-		self.searchQuery = self.searchEdit and self.searchEdit:GetText() or self.searchQuery
-		-- Clear search when navigating tree intentionally? Keep search if active.
-		self:LoadEntryIntoEditor(nil)
-		self:RefreshTreeSelection()
-		self:RefreshList()
-		self:RefreshDetailEnabled()
-		if AddressBar and AddressBar.SetFolder then
-			AddressBar:SetFolder(self.selectedFolderId, true)
-		end
-	end
-	if skipGuard then
-		doSelect()
-	else
-		self:WithUnsavedGuard(doSelect)
+function UI:SelectFolder(folderId)
+	self.selectedFolderId = folderId or Data:GetRootId()
+	self.selectedEntryId = nil
+	self.searchQuery = self.searchEdit and self.searchEdit:GetText() or self.searchQuery
+	self:LoadMacroIntoViewer(nil)
+	self:RefreshTreeSelection()
+	self:RefreshList()
+	if AddressBar and AddressBar.SetFolder then
+		AddressBar:SetFolder(self.selectedFolderId, true)
 	end
 end
 
---- Ensure ancestors of folderId are expanded in the tree (chevron + AceGUI groups).
 function UI:ExpandFolderPath(folderId)
 	if not folderId then
 		return
@@ -167,26 +204,18 @@ function UI:ExpandFolderPath(folderId)
 	end
 end
 
-function UI:SelectEntry(entryId, skipGuard)
-	local function doSelect()
-		local entry = Data:GetEntry(entryId)
-		if not entry then
-			return
-		end
-		self.selectedEntryId = entryId
-		self.selectedFolderId = entry.parentId
-		self:LoadEntryIntoEditor(entry)
-		self:RefreshTreeSelection()
-		self:RefreshList()
-		self:RefreshDetailEnabled()
-		if AddressBar and AddressBar.SetFolder then
-			AddressBar:SetFolder(self.selectedFolderId, true)
-		end
+function UI:SelectEntry(entryId)
+	local entry = Data:GetEntry(entryId)
+	if not entry then
+		return
 	end
-	if skipGuard then
-		doSelect()
-	else
-		self:WithUnsavedGuard(doSelect)
+	self.selectedEntryId = entryId
+	self.selectedFolderId = entry.parentId
+	self:LoadMacroIntoViewer(entry)
+	self:RefreshTreeSelection()
+	self:RefreshList()
+	if AddressBar and AddressBar.SetFolder then
+		AddressBar:SetFolder(self.selectedFolderId, true)
 	end
 end
 
@@ -202,11 +231,11 @@ function UI:RefreshAll()
 	end
 	if self.selectedEntryId then
 		local entry = Data:GetEntry(self.selectedEntryId)
-		if entry and not self:IsDirty() then
-			self:LoadEntryIntoEditor(entry)
-		elseif not entry then
+		if entry then
+			self:LoadMacroIntoViewer(entry)
+		else
 			self.selectedEntryId = nil
-			self:LoadEntryIntoEditor(nil)
+			self:LoadMacroIntoViewer(nil)
 		end
 	end
 end
@@ -217,10 +246,9 @@ function UI:RefreshTree()
 	end
 	self.treeGroup:SetTree(Data:BuildTree())
 	self:RefreshTreeSelection()
-	self:DecorateTreeAddButtons()
+	self:DecorateTreeRows()
 end
 
---- Toggle expand/collapse for a tree path, remembering user intent.
 function UI:ToggleFolderExpanded(uniquevalue)
 	if not uniquevalue or not self.treeGroup then
 		return
@@ -229,137 +257,19 @@ function UI:ToggleFolderExpanded(uniquevalue)
 	local nowExpanded = not status[uniquevalue]
 	status[uniquevalue] = nowExpanded or nil
 	self._userExpanded = self._userExpanded or {}
-	if nowExpanded then
-		self._userExpanded[uniquevalue] = true
-	else
-		self._userExpanded[uniquevalue] = nil
-	end
+	-- Store false (not nil) so a collapsed root is not re-opened as the default.
+	self._userExpanded[uniquevalue] = nowExpanded and true or false
 	self.treeGroup:RefreshTree()
 end
 
---- Resolve the tree folder button currently under the mouse (walks parents).
-function UI:GetFolderButtonUnderMouse()
-	local frames
-	if GetMouseFoci then
-		frames = GetMouseFoci()
-	elseif GetMouseFocus then
-		local focus = GetMouseFocus()
-		frames = focus and { focus } or {}
-	else
-		return nil
-	end
-	for i = 1, #frames do
-		local frame = frames[i]
-		while frame do
-			if frame.value and frame.obj == self.treeGroup then
-				return frame
-			end
-			frame = frame.GetParent and frame:GetParent() or nil
-		end
-	end
-	return nil
-end
-
---- Finish a folder drag onto destFolderId (may be nil if dropped nowhere useful).
-function UI:CompleteFolderDrag(destFolderId)
-	local srcId = self._draggingFolderId
-	self._draggingFolderId = nil
-	if ResetCursor then
-		ResetCursor()
-	end
-	if self._dragHighlightBtn then
-		self._dragHighlightBtn:UnlockHighlight()
-		self._dragHighlightBtn = nil
-	end
-	if not srcId or not destFolderId or srcId == destFolderId then
-		return
-	end
-	local src = Data:GetFolder(srcId)
-	if not src or src.parentId == destFolderId then
-		return
-	end
-	local ok, err = Data:MoveFolder(srcId, destFolderId)
-	if not ok then
-		addon():Notify(err, true)
-		return
-	end
-	-- Paths changed; rebuild expand state so the destination stays open.
-	self._userExpanded = {}
-	local pathParts = {}
-	local walk = destFolderId
-	while walk do
-		table.insert(pathParts, 1, walk)
-		local folder = Data:GetFolder(walk)
-		walk = folder and folder.parentId
-	end
-	for i = 1, #pathParts do
-		self._userExpanded[table.concat(pathParts, "\001", 1, i)] = true
-	end
-	self:SelectFolder(srcId, true)
-	self:RefreshAll()
-	self:SetStatus("Folder moved.")
-end
-
---- Enable click-and-drag to move a folder into another folder.
-function UI:SetupFolderRowDrag(button)
-	if button._scriptoriumDragHooked then
-		return
-	end
-	button:RegisterForDrag("LeftButton")
-	button:SetScript("OnDragStart", function(btn)
-		if not btn.value or btn.value == Data:GetRootId() then
-			return
-		end
-		self._draggingFolderId = btn.value
-		-- Prefer a built-in cursor token; fall back silently if unavailable.
-		if SetCursorByMode then
-			pcall(SetCursorByMode, 43) -- HoldingHandCursor (open hand)
-		elseif SetCursor then
-			pcall(SetCursor, "Interface\\Cursor\\OpenHandGlow")
-		end
-	end)
-	button:SetScript("OnDragStop", function()
-		if not self._draggingFolderId then
-			return
-		end
-		local destBtn = self:GetFolderButtonUnderMouse()
-		self:CompleteFolderDrag(destBtn and destBtn.value)
-	end)
-	local origOnEnter = button:GetScript("OnEnter")
-	button:SetScript("OnEnter", function(btn, ...)
-		if origOnEnter then
-			origOnEnter(btn, ...)
-		end
-		if self._draggingFolderId and btn.value and btn.value ~= self._draggingFolderId then
-			if self._dragHighlightBtn and self._dragHighlightBtn ~= btn then
-				self._dragHighlightBtn:UnlockHighlight()
-			end
-			btn:LockHighlight()
-			self._dragHighlightBtn = btn
-		end
-	end)
-	local origOnLeave = button:GetScript("OnLeave")
-	button:SetScript("OnLeave", function(btn, ...)
-		if self._dragHighlightBtn == btn then
-			btn:UnlockHighlight()
-			self._dragHighlightBtn = nil
-		end
-		if origOnLeave then
-			origOnLeave(btn, ...)
-		end
-	end)
-	button._scriptoriumDragHooked = true
-end
-
---- Truncate a folder label to fit maxWidth, preserving root gold coloring / counts.
---- Returns true if the visible text was truncated.
 local function SetTruncatedFolderLabel(fontString, folder, maxWidth)
 	if not fontString or not folder then
 		return false
 	end
 	local isRoot = folder.id == Data:GetRootId()
+	local isLeaf = #(folder.children or {}) == 0
 	local entryCount = 0
-	if not isRoot then
+	if isLeaf and not isRoot then
 		for _, entryId in ipairs(folder.entries or {}) do
 			if Data:GetEntry(entryId) then
 				entryCount = entryCount + 1
@@ -371,7 +281,10 @@ local function SetTruncatedFolderLabel(fontString, folder, maxWidth)
 		if isRoot then
 			return "|cffffd100" .. name .. "|r"
 		end
-		return string.format("%s (%d)", name, entryCount)
+		if isLeaf then
+			return string.format("%s (%d)", name, entryCount)
+		end
+		return name
 	end
 
 	local fullName = folder.name or ""
@@ -427,7 +340,6 @@ local function LayoutTreeFolderLabel(button, textLeft)
 	local folder = Data:GetFolder(button.value)
 	button._scriptoriumFullName = folder and folder.name or nil
 	local maxWidth = fs:GetWidth() or 0
-	-- Width can be 0 before the first layout pass; fall back to button geometry.
 	if maxWidth < 1 and button.GetWidth then
 		maxWidth = math.max(0, (button:GetWidth() or 0) - textLeft - 4)
 	end
@@ -455,14 +367,12 @@ local function ApplyTreeWidth(tree, width)
 	return width
 end
 
---- Custom folder-pane splitter (AceGUI StartSizing is unreliable with dual anchors).
 function UI:EnsureTreeDragger()
 	local tree = self.treeGroup
 	if not tree or not tree.treeframe or not tree.frame then
 		return
 	end
 
-	-- Disable AceGUI's built-in grip; it sits under row buttons and StartSizing fails here.
 	if tree.dragger then
 		tree.dragger:EnableMouse(false)
 		tree.dragger:Hide()
@@ -519,7 +429,7 @@ function UI:EnsureTreeDragger()
 				self:SetScript("OnUpdate", nil)
 				self:SetBackdropColor(1, 1, 1, 0)
 				UI:ForceLayout()
-				UI:DecorateTreeAddButtons()
+				UI:DecorateTreeRows()
 				UI:EnsureTreeDragger()
 				UI:EnsureContentsDragger()
 				return
@@ -542,7 +452,7 @@ function UI:EnsureTreeDragger()
 		frame:SetScript("OnUpdate", nil)
 		frame:SetBackdropColor(1, 1, 1, 0)
 		UI:ForceLayout()
-		UI:DecorateTreeAddButtons()
+		UI:DecorateTreeRows()
 		UI:EnsureTreeDragger()
 		UI:EnsureContentsDragger()
 	end)
@@ -551,7 +461,6 @@ end
 local CONTENTS_WIDTH_MIN = 180
 local ENTRY_WIDTH_MIN = 260
 
---- Address bar fills remaining width; search stays fixed on the right.
 function UI:LayoutNavRow()
 	if not self.navRow or not self.addressCol or not self.searchCol then
 		return
@@ -571,7 +480,6 @@ function UI:LayoutNavRow()
 	self:AlignAddressWithSearch()
 end
 
---- Keep the address bar vertically aligned with the search input field.
 function UI:AlignAddressWithSearch()
 	local host = self.addressHost and self.addressHost.frame
 	local edit = self.searchEdit and self.searchEdit.editbox
@@ -586,7 +494,6 @@ function UI:AlignAddressWithSearch()
 	host:SetPoint("BOTTOM", edit, "BOTTOM", 0, 0)
 end
 
---- Main body (tree + panes) fills height under the full-width address/search toolbar.
 function UI:LayoutBodyHeight()
 	local shell = self.shellGroup
 	local nav = self.navRow
@@ -595,9 +502,10 @@ function UI:LayoutBodyHeight()
 		return
 	end
 	local shellH = shell.frame:GetHeight() or 0
+	local optionsH = (self.optionsRow and self.optionsRow.frame and self.optionsRow.frame:GetHeight()) or (self.optionsRowHeight or 0)
 	local navH = (nav.frame and nav.frame:GetHeight()) or 44
 	local gapH = self.navBottomGapHeight or 2
-	local height = math.max(120, shellH - navH - gapH - 6)
+	local height = math.max(120, shellH - optionsH - navH - gapH - 6)
 	body:SetHeight(height)
 	if body.DoLayout then
 		body:DoLayout()
@@ -635,7 +543,6 @@ function UI:SyncPaneWidths()
 	self:LayoutBodyHeight()
 end
 
---- Splitter between Contents and Entry (same interaction as the Folders splitter).
 function UI:EnsureContentsDragger()
 	local list = self.listContainer
 	local host = self.frame and self.frame.frame
@@ -739,8 +646,7 @@ local function HideFolderTooltip()
 	GameTooltip:Hide()
 end
 
---- Add "+" / chevron controls and right-click menus on folder tree rows.
-function UI:DecorateTreeAddButtons()
+function UI:DecorateTreeRows()
 	local tree = self.treeGroup
 	if not tree or not tree.buttons then
 		return
@@ -754,42 +660,33 @@ function UI:DecorateTreeAddButtons()
 				if mouseButton == "RightButton" then
 					local folderId = btn.value
 					if folderId then
-						self:WithUnsavedGuard(function()
-							if folderId ~= self.selectedFolderId then
-								self.selectedFolderId = folderId
-								self.selectedEntryId = nil
-								self:LoadEntryIntoEditor(nil)
-								self:RefreshTreeSelection()
-								self:RefreshList()
-								self:RefreshDetailEnabled()
-							end
-							self:ShowFolderContextMenu(btn, folderId)
-						end)
+						if folderId ~= self.selectedFolderId then
+							self.selectedFolderId = folderId
+							self.selectedEntryId = nil
+							self:LoadMacroIntoViewer(nil)
+							self:RefreshTreeSelection()
+							self:RefreshList()
+						end
+						self:ShowFolderContextMenu(btn, folderId)
 					end
 					return
 				end
 				if origOnClick then
 					origOnClick(btn, mouseButton, ...)
 				end
-				-- Row clicks select only; never keep the clicked folder expanded
-				-- unless the user opened it with the chevron.
 				if btn.uniquevalue then
 					self:RefreshTreeSelection()
 				end
 			end)
-			-- Expand/collapse is via the chevron only.
 			button:SetScript("OnDoubleClick", function() end)
 			button._scriptoriumMenuHooked = true
 		end
 
-		-- Keep double-click disabled even on already-hooked rows.
 		if button:IsShown() then
 			button:SetScript("OnDoubleClick", function() end)
 		end
 
 		if button:IsShown() and button.value then
-			self:SetupFolderRowDrag(button)
-			-- OptionsListButtonTemplate shifts the label while pressed; keep it still.
 			if button.SetPushedTextOffset then
 				button:SetPushedTextOffset(0, 0)
 			end
@@ -798,10 +695,6 @@ function UI:DecorateTreeAddButtons()
 			end
 			if not button._scriptoriumTipHooked then
 				button:HookScript("OnEnter", function(btn)
-					if self._draggingFolderId then
-						return
-					end
-					-- Always show the real folder name (label text may be truncated).
 					ShowFolderTooltip(btn)
 				end)
 				button:HookScript("OnLeave", function()
@@ -811,7 +704,6 @@ function UI:DecorateTreeAddButtons()
 			end
 		end
 
-		-- Fully disable AceGUI's built-in expand toggle (we use our own chevron).
 		if button.toggle then
 			button.toggle:SetScript("OnClick", nil)
 			button.toggle:EnableMouse(false)
@@ -819,22 +711,23 @@ function UI:DecorateTreeAddButtons()
 			button.toggle:SetAlpha(0)
 		end
 
-		local addBtn = button._scriptoriumAdd
-		if addBtn then
-			addBtn:Hide()
-		end
 		local chevron = button._scriptoriumChevronBtn
 
 		if button:IsShown() and button.value then
 			local level = button.level or 1
+			local levelIndent = (level == 1 and 8 or (8 * level))
+			-- Nudge character folders in a bit further under their realm.
+			if Data:IsCharacterFolder(button.value) then
+				levelIndent = levelIndent + 10
+			end
 			local hasIcon = button.icon and button.icon:GetTexture()
-			local left = (hasIcon and 16 or 0) + (level == 1 and 8 or (8 * level))
 			local hasChildren = button.treeline and button.treeline.hasChildren
 			local chevronSize = 18
 			local chevronGap = 2
-			local textLeft = left + chevronSize + chevronGap
+			local iconSize = 14
+			local iconGap = 2
+			local textLeft
 
-			-- Keep one font for normal + highlight so LockHighlight does not nudge glyphs.
 			local font = (level == 1) and GameFontNormal or GameFontHighlightSmall
 			button:SetNormalFontObject(font)
 			button:SetHighlightFontObject(font)
@@ -870,11 +763,20 @@ function UI:DecorateTreeAddButtons()
 					pushed:SetRotation(rotation)
 				end
 				chevron:ClearAllPoints()
-				chevron:SetPoint("LEFT", button, "LEFT", left, 0)
+				chevron:SetPoint("LEFT", button, "LEFT", levelIndent, 0)
 				chevron:Show()
+				textLeft = levelIndent + chevronSize + chevronGap
 			else
 				if chevron then
 					chevron:Hide()
+				end
+				if hasIcon then
+					button.icon:ClearAllPoints()
+					button.icon:SetSize(iconSize, iconSize)
+					button.icon:SetPoint("LEFT", button, "LEFT", levelIndent, 0)
+					textLeft = levelIndent + iconSize + iconGap
+				else
+					textLeft = levelIndent + chevronSize + chevronGap
 				end
 			end
 
@@ -892,7 +794,6 @@ function UI:RefreshTreeSelection()
 	if not self.treeGroup or not self.selectedFolderId then
 		return
 	end
-	-- AceGUI TreeGroup uniquevalue is a \001-joined path from root.
 	local pathParts = {}
 	local id = self.selectedFolderId
 	while id do
@@ -907,17 +808,21 @@ function UI:RefreshTreeSelection()
 	end
 	status.groups = status.groups or {}
 
-	-- Rebuild expand state from scratch so a row click can never leave a
-	-- folder open unless the user opened it with the chevron.
+	-- Rebuild expand state: root (Macros) is expanded by default; other folders
+	-- stay collapsed unless the user opened them or they lead to the selection.
 	wipe(status.groups)
+	local rootId = Data:GetRootId()
+	self._userExpanded = self._userExpanded or {}
+	if self._userExpanded[rootId] == nil then
+		self._userExpanded[rootId] = true
+	end
+
 	for i = 1, #pathParts - 1 do
 		status.groups[table.concat(pathParts, "\001", 1, i)] = true
 	end
-	if self._userExpanded then
-		for path, isOpen in pairs(self._userExpanded) do
-			if isOpen then
-				status.groups[path] = true
-			end
+	for path, isOpen in pairs(self._userExpanded) do
+		if isOpen then
+			status.groups[path] = true
 		end
 	end
 	status.selected = unique
@@ -945,56 +850,27 @@ function UI:RefreshList()
 	if isRoot then
 		local hint = AceGUI:Create("Label")
 		hint:SetFullWidth(true)
-		hint:SetText("Select a folder to view and manage its contents.")
+		hint:SetText("Select a folder to view its macros.")
 		self.listGroup:AddChild(hint)
 		return
 	end
 
 	local _, entries = Data:GetSortedChildren(folderId)
 
-	local toolbar = AceGUI:Create("SimpleGroup")
-	toolbar:SetFullWidth(true)
-	toolbar:SetLayout("Flow")
-	self.listGroup:AddChild(toolbar)
-
-	local addEntryBtn = AceGUI:Create("Button")
-	addEntryBtn:SetText("New Entry")
-	addEntryBtn:SetWidth(100)
-	addEntryBtn:SetCallback("OnClick", function()
-		self:CreateEntry()
-	end)
-	toolbar:AddChild(addEntryBtn)
-	self.addEntryButton = addEntryBtn
-
-	local deleteAllBtn = AceGUI:Create("Button")
-	deleteAllBtn:SetText("Delete All")
-	deleteAllBtn:SetWidth(100)
-	deleteAllBtn:SetDisabled(#entries == 0)
-	deleteAllBtn:SetCallback("OnClick", function()
-		self:DeleteAllEntriesInFolder(folderId)
-	end)
-	toolbar:AddChild(deleteAllBtn)
-	self.deleteAllButton = deleteAllBtn
-
-	local spacer = AceGUI:Create("Label")
-	spacer:SetFullWidth(true)
-	spacer:SetText(" ")
-	spacer:SetHeight(8)
-	self.listGroup:AddChild(spacer)
-
 	if #entries == 0 then
 		local empty = AceGUI:Create("Label")
 		empty:SetFullWidth(true)
-		empty:SetText("No entries in this folder.")
+		empty:SetText("No macros in this folder.")
 		self.listGroup:AddChild(empty)
 		return
 	end
 
 	for _, entry in ipairs(entries) do
 		self:AddListRow({
-			kind = "entry",
+			kind = "macro",
 			id = entry.id,
 			label = entry.name,
+			icon = entry.icon,
 			selected = (entry.id == self.selectedEntryId),
 			onClick = function()
 				self:SelectEntry(entry.id)
@@ -1047,12 +923,11 @@ function UI:PopulateSearchResults(query)
 	if #results == 0 then
 		local empty = AceGUI:Create("Label")
 		empty:SetFullWidth(true)
-		empty:SetText("No matching entries.")
+		empty:SetText("No matching macros.")
 		self.listGroup:AddChild(empty)
 		return
 	end
 
-	-- Group matches by folder so the breadcrumb is a section title, not repeated per row.
 	local groups = {}
 	local order = {}
 	for _, result in ipairs(results) do
@@ -1095,9 +970,10 @@ function UI:PopulateSearchResults(query)
 
 		for _, entry in ipairs(group.entries) do
 			self:AddListRow({
-				kind = "entry",
+				kind = "macro",
 				id = entry.id,
 				label = entry.name,
+				icon = entry.icon,
 				selected = (entry.id == self.selectedEntryId),
 				onClick = function()
 					self:SelectEntry(entry.id)
@@ -1112,10 +988,10 @@ end
 
 function UI:AddListRow(info)
 	local height = info.height or 18
+	local iconSize = 14
+	local iconLeft = 8
+	local iconGap = 4
 
-	-- Use the same button template as the folder tree so selection highlight matches.
-	-- Keep the native button on a short-lived AceGUI holder and detach it on release
-	-- so AceGUI pooling cannot leak row chrome into other SimpleGroups.
 	local holder = AceGUI:Create("SimpleGroup")
 	holder:SetFullWidth(true)
 	holder:SetHeight(height)
@@ -1132,21 +1008,39 @@ function UI:AddListRow(info)
 			btn.toggle:Hide()
 			btn.toggle:Disable()
 		end
+		local icon = btn:CreateTexture(nil, "ARTWORK")
+		icon:SetSize(iconSize, iconSize)
+		btn._scrIcon = icon
 	else
 		btn:SetParent(holder.frame)
+		if not btn._scrIcon then
+			local icon = btn:CreateTexture(nil, "ARTWORK")
+			icon:SetSize(iconSize, iconSize)
+			btn._scrIcon = icon
+		end
 	end
 	btn:ClearAllPoints()
 	btn:SetAllPoints(holder.frame)
 	btn:SetText(info.label or "")
 	local fs = btn:GetFontString()
+	local textLeft = iconLeft
+	if info.icon and btn._scrIcon then
+		btn._scrIcon:SetTexture(Compat.GetIconTexture(info.icon))
+		btn._scrIcon:ClearAllPoints()
+		btn._scrIcon:SetSize(iconSize, iconSize)
+		btn._scrIcon:SetPoint("LEFT", btn, "LEFT", iconLeft, 0)
+		btn._scrIcon:Show()
+		textLeft = iconLeft + iconSize + iconGap
+	elseif btn._scrIcon then
+		btn._scrIcon:Hide()
+	end
 	if fs then
 		fs:ClearAllPoints()
-		fs:SetPoint("LEFT", 8, 0)
+		fs:SetPoint("LEFT", textLeft, 0)
 		fs:SetPoint("RIGHT", -8, 0)
 		fs:SetJustifyH("LEFT")
 		fs:SetWordWrap(height > 20)
 	end
-	-- Same fonts as nested tree rows.
 	btn:SetNormalFontObject(GameFontHighlightSmall)
 	btn:SetHighlightFontObject(GameFontHighlightSmall)
 	if info.selected then
@@ -1180,6 +1074,9 @@ function UI:AddListRow(info)
 		if rowBtn then
 			rowBtn:SetScript("OnClick", nil)
 			rowBtn:UnlockHighlight()
+			if rowBtn._scrIcon then
+				rowBtn._scrIcon:Hide()
+			end
 			rowBtn:Hide()
 			rowBtn:SetParent(nil)
 			widget._scrRowBtn = nil
@@ -1192,16 +1089,21 @@ function UI:AddListRow(info)
 	end
 end
 
-function UI:RefreshDetailEnabled()
-	-- handled in LoadEntryIntoEditor
+------------------------------------------------------------------------
+-- Actions / context menus
+------------------------------------------------------------------------
+
+function UI:PullMacros()
+	addon():SyncMacros(true)
+	self:RefreshAll()
 end
 
-------------------------------------------------------------------------
--- Context menus / actions
-------------------------------------------------------------------------
+function UI:ManualImport()
+	self:PullMacros()
+end
 
 function UI:ShowListContextMenu(owner, info)
-	if info.kind ~= "entry" then
+	if info.kind ~= "macro" then
 		return
 	end
 	local entryId = info.id
@@ -1210,101 +1112,49 @@ function UI:ShowListContextMenu(owner, info)
 		return
 	end
 
-	local function openMenu()
-		if self.selectedEntryId ~= entryId then
-			self:SelectEntry(entryId, true)
-		end
-
-		if MenuUtil and MenuUtil.CreateContextMenu then
-			local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
-				rootDescription:CreateTitle(entry.name)
-				rootDescription:CreateButton("Create Blizzard Macro", function()
-					self:CreateBlizzardMacro(entryId)
-				end)
-				rootDescription:CreateButton("Rename", function()
-					self:RenameSelectedEntry(entryId)
-				end)
-				rootDescription:CreateButton("Duplicate", function()
-					self:DuplicateSelectedEntry(entryId)
-				end)
-				rootDescription:CreateButton("Move into Folder", function()
-					self:MoveSelectedIntoFolder(entryId)
-				end)
-				rootDescription:CreateButton("Delete", function()
-					self:DeleteSelectedEntry(entryId)
-				end)
-			end)
-			if menu then
-				menu:SetFrameStrata("TOOLTIP")
-				menu:SetToplevel(true)
-			end
-			return
-		end
-
-		if not self._entryDropDown then
-			self._entryDropDown = CreateFrame("Frame", "ScriptoriumEntryContextMenu", UIParent, "UIDropDownMenuTemplate")
-		end
-		self._entryDropDown:SetFrameStrata("TOOLTIP")
-		self._entryDropDown:SetToplevel(true)
-		UIDropDownMenu_Initialize(self._entryDropDown, function(_, level)
-			local menuInfo = UIDropDownMenu_CreateInfo()
-			menuInfo.text = entry.name
-			menuInfo.isTitle = true
-			menuInfo.notCheckable = true
-			UIDropDownMenu_AddButton(menuInfo, level)
-
-			menuInfo = UIDropDownMenu_CreateInfo()
-			menuInfo.text = "Create Blizzard Macro"
-			menuInfo.notCheckable = true
-			menuInfo.func = function()
-				self:CreateBlizzardMacro(entryId)
-			end
-			UIDropDownMenu_AddButton(menuInfo, level)
-
-			menuInfo = UIDropDownMenu_CreateInfo()
-			menuInfo.text = "Rename"
-			menuInfo.notCheckable = true
-			menuInfo.func = function()
-				self:RenameSelectedEntry(entryId)
-			end
-			UIDropDownMenu_AddButton(menuInfo, level)
-
-			menuInfo = UIDropDownMenu_CreateInfo()
-			menuInfo.text = "Duplicate"
-			menuInfo.notCheckable = true
-			menuInfo.func = function()
-				self:DuplicateSelectedEntry(entryId)
-			end
-			UIDropDownMenu_AddButton(menuInfo, level)
-
-			menuInfo = UIDropDownMenu_CreateInfo()
-			menuInfo.text = "Move into Folder…"
-			menuInfo.notCheckable = true
-			menuInfo.func = function()
-				self:MoveSelectedIntoFolder(entryId)
-			end
-			UIDropDownMenu_AddButton(menuInfo, level)
-
-			menuInfo = UIDropDownMenu_CreateInfo()
-			menuInfo.text = "Delete"
-			menuInfo.notCheckable = true
-			menuInfo.func = function()
-				self:DeleteSelectedEntry(entryId)
-			end
-			UIDropDownMenu_AddButton(menuInfo, level)
-		end, "MENU")
-		ToggleDropDownMenu(1, nil, self._entryDropDown, "cursor", 0, 0)
-		local list = _G["DropDownList1"]
-		if list then
-			list:SetFrameStrata("TOOLTIP")
-			list:SetToplevel(true)
-		end
+	if self.selectedEntryId ~= entryId then
+		self:SelectEntry(entryId)
 	end
 
-	if self.selectedEntryId ~= entryId then
-		self:WithUnsavedGuard(openMenu)
-	else
-		openMenu()
+	if MenuUtil and MenuUtil.CreateContextMenu then
+		local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
+			rootDescription:CreateTitle(entry.name)
+			rootDescription:CreateButton("Create Blizzard Macro", function()
+				self:CreateBlizzardMacro(entryId)
+			end)
+		end)
+		if menu then
+			menu:SetFrameStrata("TOOLTIP")
+			menu:SetToplevel(true)
+		end
+		return
+	end
+
+	if not self._entryDropDown then
+		self._entryDropDown = CreateFrame("Frame", "ScriptoriumMacroContextMenu", UIParent, "UIDropDownMenuTemplate")
+	end
+	self._entryDropDown:SetFrameStrata("TOOLTIP")
+	self._entryDropDown:SetToplevel(true)
+	UIDropDownMenu_Initialize(self._entryDropDown, function(_, level)
+		local menuInfo = UIDropDownMenu_CreateInfo()
+		menuInfo.text = entry.name
+		menuInfo.isTitle = true
+		menuInfo.notCheckable = true
+		UIDropDownMenu_AddButton(menuInfo, level)
+
+		menuInfo = UIDropDownMenu_CreateInfo()
+		menuInfo.text = "Create Blizzard Macro"
+		menuInfo.notCheckable = true
+		menuInfo.func = function()
+			self:CreateBlizzardMacro(entryId)
+		end
+		UIDropDownMenu_AddButton(menuInfo, level)
+	end, "MENU")
+	ToggleDropDownMenu(1, nil, self._entryDropDown, "cursor", 0, 0)
+	local list = _G["DropDownList1"]
+	if list then
+		list:SetFrameStrata("TOOLTIP")
+		list:SetToplevel(true)
 	end
 end
 
@@ -1313,37 +1163,25 @@ function UI:ShowFolderContextMenu(owner, folderId)
 	if not folder then
 		return
 	end
-	local isRoot = folderId == Data:GetRootId()
+	-- Only leaf folders hold macros; parent folders are always empty.
+	if folderId == Data:GetRootId() or #(folder.children or {}) > 0 then
+		return
+	end
+
+	local isCharacterFolder = Data:IsCharacterFolder(folderId)
 
 	if MenuUtil and MenuUtil.CreateContextMenu then
 		local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
 			rootDescription:CreateTitle(folder.name)
-			rootDescription:CreateButton("Add Folder", function()
-				self:CreateFolder(folderId)
-			end)
-			local addEntryBtn = rootDescription:CreateButton("Add Entry", function()
-				self:CreateEntry(folderId)
-			end)
 			rootDescription:CreateButton("Create Blizzard Macros From Folder", function()
 				self:CreateBlizzardMacrosFromFolder(folderId)
 			end)
-			local importBtn = rootDescription:CreateButton("Import Macros to Folder", function()
-				self:ShowImportMacrosDialog(folderId)
-			end)
-			local renameBtn = rootDescription:CreateButton("Rename Folder", function()
-				self:RenameSelectedFolder(folderId)
-			end)
-			local deleteBtn = rootDescription:CreateButton("Delete Folder", function()
-				self:DeleteSelectedFolder(folderId)
-			end)
-			if isRoot then
-				addEntryBtn:SetEnabled(false)
-				importBtn:SetEnabled(false)
-				renameBtn:SetEnabled(false)
-				deleteBtn:SetEnabled(false)
+			if isCharacterFolder then
+				rootDescription:CreateButton("Delete Character Folder", function()
+					self:DeleteCharacterFolder(folderId)
+				end)
 			end
 		end)
-		-- AceGUI frames use FULLSCREEN_DIALOG; default menus sit behind them.
 		if menu then
 			menu:SetFrameStrata("TOOLTIP")
 			menu:SetToplevel(true)
@@ -1351,7 +1189,6 @@ function UI:ShowFolderContextMenu(owner, folderId)
 		return
 	end
 
-	-- Classic / older clients: UIDropDownMenu at cursor.
 	if not self._folderDropDown then
 		self._folderDropDown = CreateFrame("Frame", "ScriptoriumFolderContextMenu", UIParent, "UIDropDownMenuTemplate")
 	end
@@ -1365,23 +1202,6 @@ function UI:ShowFolderContextMenu(owner, folderId)
 		UIDropDownMenu_AddButton(info, level)
 
 		info = UIDropDownMenu_CreateInfo()
-		info.text = "Add Folder"
-		info.notCheckable = true
-		info.func = function()
-			self:CreateFolder(folderId)
-		end
-		UIDropDownMenu_AddButton(info, level)
-
-		info = UIDropDownMenu_CreateInfo()
-		info.text = "Add Entry"
-		info.notCheckable = true
-		info.disabled = isRoot
-		info.func = function()
-			self:CreateEntry(folderId)
-		end
-		UIDropDownMenu_AddButton(info, level)
-
-		info = UIDropDownMenu_CreateInfo()
 		info.text = "Create Blizzard Macros From Folder"
 		info.notCheckable = true
 		info.func = function()
@@ -1389,35 +1209,17 @@ function UI:ShowFolderContextMenu(owner, folderId)
 		end
 		UIDropDownMenu_AddButton(info, level)
 
-		info = UIDropDownMenu_CreateInfo()
-		info.text = "Import Macros to Folder"
-		info.notCheckable = true
-		info.disabled = isRoot
-		info.func = function()
-			self:ShowImportMacrosDialog(folderId)
+		if isCharacterFolder then
+			info = UIDropDownMenu_CreateInfo()
+			info.text = "Delete Character Folder"
+			info.notCheckable = true
+			info.func = function()
+				self:DeleteCharacterFolder(folderId)
+			end
+			UIDropDownMenu_AddButton(info, level)
 		end
-		UIDropDownMenu_AddButton(info, level)
-
-		info = UIDropDownMenu_CreateInfo()
-		info.text = "Rename Folder"
-		info.notCheckable = true
-		info.disabled = isRoot
-		info.func = function()
-			self:RenameSelectedFolder(folderId)
-		end
-		UIDropDownMenu_AddButton(info, level)
-
-		info = UIDropDownMenu_CreateInfo()
-		info.text = "Delete Folder"
-		info.notCheckable = true
-		info.disabled = isRoot
-		info.func = function()
-			self:DeleteSelectedFolder(folderId)
-		end
-		UIDropDownMenu_AddButton(info, level)
 	end, "MENU")
 	ToggleDropDownMenu(1, nil, self._folderDropDown, "cursor", 0, 0)
-	-- DropList frames are created by the dropdown system; raise them too.
 	local list = _G["DropDownList1"]
 	if list then
 		list:SetFrameStrata("TOOLTIP")
@@ -1425,612 +1227,49 @@ function UI:ShowFolderContextMenu(owner, folderId)
 	end
 end
 
-function UI:ShowContentsEmptyContextMenu(owner)
-	local folderId = self.selectedFolderId or Data:GetRootId()
-	local folder = Data:GetFolder(folderId)
-	if not folder then
-		return
-	end
-	local isRoot = folderId == Data:GetRootId()
-
-	if MenuUtil and MenuUtil.CreateContextMenu then
-		local menu = MenuUtil.CreateContextMenu(owner, function(_, rootDescription)
-			rootDescription:CreateTitle(folder.name)
-			local addEntryBtn = rootDescription:CreateButton("Add Entry", function()
-				self:CreateEntry(folderId)
-			end)
-			local importBtn = rootDescription:CreateButton("Import Macros to Folder", function()
-				self:ShowImportMacrosDialog(folderId)
-			end)
-			if isRoot then
-				addEntryBtn:SetEnabled(false)
-				importBtn:SetEnabled(false)
-			end
-		end)
-		if menu then
-			menu:SetFrameStrata("TOOLTIP")
-			menu:SetToplevel(true)
-		end
-		return
-	end
-
-	if not self._contentsEmptyDropDown then
-		self._contentsEmptyDropDown = CreateFrame("Frame", "ScriptoriumContentsEmptyContextMenu", UIParent, "UIDropDownMenuTemplate")
-	end
-	self._contentsEmptyDropDown:SetFrameStrata("TOOLTIP")
-	self._contentsEmptyDropDown:SetToplevel(true)
-	UIDropDownMenu_Initialize(self._contentsEmptyDropDown, function(_, level)
-		local info = UIDropDownMenu_CreateInfo()
-		info.text = folder.name
-		info.isTitle = true
-		info.notCheckable = true
-		UIDropDownMenu_AddButton(info, level)
-
-		info = UIDropDownMenu_CreateInfo()
-		info.text = "Add Entry"
-		info.notCheckable = true
-		info.disabled = isRoot
-		info.func = function()
-			self:CreateEntry(folderId)
-		end
-		UIDropDownMenu_AddButton(info, level)
-
-		info = UIDropDownMenu_CreateInfo()
-		info.text = "Import Macros to Folder"
-		info.notCheckable = true
-		info.disabled = isRoot
-		info.func = function()
-			self:ShowImportMacrosDialog(folderId)
-		end
-		UIDropDownMenu_AddButton(info, level)
-	end, "MENU")
-	ToggleDropDownMenu(1, nil, self._contentsEmptyDropDown, "cursor", 0, 0)
-	local list = _G["DropDownList1"]
-	if list then
-		list:SetFrameStrata("TOOLTIP")
-		list:SetToplevel(true)
-	end
-end
-
-function UI:EnsureContentsEmptyContext()
-	local scroll = self.listGroup
-	if not scroll or not scroll.frame or scroll._scriptoriumEmptyCtx then
-		return
-	end
-	scroll._scriptoriumEmptyCtx = true
-
-	local function onRightClick(_, button)
-		if button ~= "RightButton" then
-			return
-		end
-		self:ShowContentsEmptyContextMenu(scroll.frame)
-	end
-
-	local function attach(frame)
-		if not frame then
-			return
-		end
-		frame:EnableMouse(true)
-		if frame:GetScript("OnMouseUp") then
-			frame:HookScript("OnMouseUp", onRightClick)
-		else
-			frame:SetScript("OnMouseUp", onRightClick)
-		end
-	end
-
-	-- Catch right-clicks on empty scroll area (entry rows handle their own menus).
-	attach(scroll.frame)
-	attach(scroll.content)
-end
-
-function UI:CreateFolder(parentId)
-	parentId = parentId or self.selectedFolderId or Data:GetRootId()
-	addon():PromptName("New folder name:", "New Folder", function(name, dialog)
-		local id, err = Data:CreateFolder(parentId, name)
-		if not id then
-			addon():SetPromptError(dialog, err or "A folder with that name already exists.")
-			return false
-		end
-		-- Expand parent in the tree so the new folder is visible.
-		if self.treeGroup then
-			local status = self.treeGroup.status or self.treeGroup.localstatus
-			if status and status.groups then
-				local pathParts = {}
-				local walk = parentId
-				while walk do
-					table.insert(pathParts, 1, walk)
-					local folder = Data:GetFolder(walk)
-					walk = folder and folder.parentId
-				end
-				status.groups[table.concat(pathParts, "\001")] = true
-				self._userExpanded = self._userExpanded or {}
-				self._userExpanded[table.concat(pathParts, "\001")] = true
-			end
-		end
-		self:SelectFolder(parentId, true)
-		self:RefreshAll()
-		self:SetStatus("Folder created.")
-	end)
-end
-
-function UI:CreateEntry(parentId)
-	parentId = parentId or self.selectedFolderId or Data:GetRootId()
-	if parentId == Data:GetRootId() then
-		addon():Notify("Select a folder before creating an entry.", true)
-		return
-	end
-	addon():PromptName("New entry name:", "New Entry", function(name)
-		local id, err = Data:CreateEntry(parentId, name)
-		if not id then
-			addon():Notify(tostring(err), true)
-			return
-		end
-		self:SelectFolder(parentId, true)
-		self:RefreshAll()
-		self:SelectEntry(id, true)
-		self:SetStatus("Entry created.")
-	end)
-end
-
-function UI:DeleteSelectedFolder(folderId)
-	local id = folderId or self.selectedFolderId
-	if not id or id == Data:GetRootId() then
-		addon():Notify("Cannot delete the root folder.", true)
-		return
-	end
-	local folder = Data:GetFolder(id)
-	if not folder then
-		return
-	end
-	addon():ConfirmDelete(
-		string.format("Delete folder \"%s\" and all of its contents?", folder.name),
-		function()
-			local parentId = folder.parentId
-			Data:DeleteFolder(id)
-			self.selectedEntryId = nil
-			self:ClearDirty()
-			self:SelectFolder(parentId, true)
-			self:RefreshAll()
-			self:SetStatus("Folder deleted.")
-		end
-	)
-end
-
-function UI:DeleteSelectedEntry(entryId)
-	local id = entryId or self.selectedEntryId
-	if not id then
-		return
-	end
-	local entry = Data:GetEntry(id)
-	if not entry then
-		return
-	end
-	addon():ConfirmDelete(
-		string.format("Delete entry \"%s\"?", entry.name),
-		function()
-			local parentId = entry.parentId
-			Data:DeleteEntry(id)
-			self.selectedEntryId = nil
-			self:ClearDirty()
-			self:LoadEntryIntoEditor(nil)
-			self:SelectFolder(parentId, true)
-			self:RefreshAll()
-			self:SetStatus("Entry deleted.")
-		end
-	)
-end
-
-function UI:DeleteAllEntriesInFolder(folderId)
-	folderId = folderId or self.selectedFolderId
-	if not folderId or folderId == Data:GetRootId() then
-		addon():Notify("Select a folder before deleting entries.", true)
+function UI:DeleteCharacterFolder(folderId)
+	if not Data:IsCharacterFolder(folderId) then
+		addon():Notify("Only character folders can be deleted this way.", true)
 		return
 	end
 	local folder = Data:GetFolder(folderId)
 	if not folder then
 		return
 	end
-	local _, entries = Data:GetSortedChildren(folderId)
-	if #entries == 0 then
-		addon():Notify("This folder has no entries to delete.", true)
-		return
-	end
-
-	local count = #entries
+	local realmId = folder.parentId
+	local realm = Data:GetFolder(realmId)
+	local realmName = realm and realm.name or ""
 	local message = string.format(
-		"Delete all %d entries in \"%s\"?\n\n|cffff5555This CANNOT be undone.|r\n\nThis does not delete your actual Blizzard macros, it just deletes your Scriptorium entries. ",
-		count,
-		folder.name
+		"Delete character folder \"%s\"%s?\n\nThis removes the macros from Scriptorium only. It does not delete Blizzard macros.",
+		folder.name,
+		realmName ~= "" and (" on " .. realmName) or ""
 	)
 	addon():ConfirmDelete(message, function()
-		local ids = {}
-		for _, entry in ipairs(entries) do
-			ids[#ids + 1] = entry.id
+		local parentId = realmId
+		Data:DeleteFolder(folderId)
+
+		-- Remove an empty realm folder left behind after the last character.
+		local realmFolder = Data:GetFolder(parentId)
+		if realmFolder and #(realmFolder.children or {}) == 0 then
+			local charRootId = realmFolder.parentId
+			Data:DeleteFolder(parentId)
+			parentId = charRootId
 		end
-		local clearedSelection = false
-		for _, id in ipairs(ids) do
-			if id == self.selectedEntryId then
-				clearedSelection = true
-			end
-			Data:DeleteEntry(id)
-		end
-		if clearedSelection then
+
+		if self.selectedFolderId == folderId or self.selectedFolderId == realmId then
 			self.selectedEntryId = nil
-			self:ClearDirty()
-			self:LoadEntryIntoEditor(nil)
-		end
-		self:SelectFolder(folderId, true)
-		self:RefreshAll()
-		self:SetStatus(string.format("Deleted %d entries.", count))
-	end)
-end
-
-function UI:RenameSelectedEntry(entryId)
-	local id = entryId or self.selectedEntryId
-	local entry = Data:GetEntry(id)
-	if not entry then
-		return
-	end
-	addon():PromptName("Rename entry:", entry.name, function(name)
-		local ok, err = Data:UpdateEntry(id, { name = name })
-		if not ok then
-			addon():Notify(err, true)
-		else
-			self:ClearDirty()
+			self:SelectFolder(parentId or Data:GetRootId())
+		elseif self.selectedEntryId then
+			local entry = Data:GetEntry(self.selectedEntryId)
+			if not entry then
+				self.selectedEntryId = nil
+				self:LoadMacroIntoViewer(nil)
+			end
 		end
 		self:RefreshAll()
-		if self.selectedEntryId == id then
-			self:LoadEntryIntoEditor(Data:GetEntry(id))
-		end
+		self:SetStatus(string.format("Deleted character folder \"%s\".", folder.name))
+		addon():Notify(string.format("Deleted character folder \"%s\".", folder.name))
 	end)
-end
-
-function UI:DuplicateSelectedEntry(entryId)
-	local id = entryId or self.selectedEntryId
-	if not id then
-		return
-	end
-	self:WithUnsavedGuard(function()
-		local newId, err = Data:DuplicateEntry(id)
-		if not newId then
-			addon():Notify(tostring(err), true)
-			return
-		end
-		self:RefreshAll()
-		self:SelectEntry(newId, true)
-		self:SetStatus("Entry duplicated.")
-	end)
-end
-
-function UI:RenameSelectedFolder(folderId)
-	local id = folderId or self.selectedFolderId
-	if not id or id == Data:GetRootId() then
-		addon():Notify("Cannot rename the root folder.", true)
-		return
-	end
-	local folder = Data:GetFolder(id)
-	if not folder then
-		return
-	end
-	addon():PromptName("Rename folder:", folder.name, function(name, dialog)
-		local ok, err = Data:RenameFolder(id, name)
-		if not ok then
-			addon():SetPromptError(dialog, err or "A folder with that name already exists.")
-			return false
-		end
-		self:RefreshAll()
-	end)
-end
-
-function UI:MoveSelectedIntoFolder(entryId)
-	local movingEntry = entryId or self.selectedEntryId
-	if not movingEntry then
-		return
-	end
-
-	addon():PromptName("Move into folder (full path or name):", "", function(targetName)
-		targetName = targetName and targetName:match("^%s*(.-)%s*$") or ""
-		if targetName == "" then
-			return
-		end
-		local destId = self:FindFolderByNameOrPath(targetName)
-		if not destId then
-			addon():Notify("Destination folder not found.", true)
-			return
-		end
-		local ok, err = Data:MoveEntry(movingEntry, destId)
-		if not ok then
-			addon():Notify(err, true)
-		else
-			self:SelectFolder(destId, true)
-			self:SelectEntry(movingEntry, true)
-			self:RefreshAll()
-			self:SetStatus("Entry moved.")
-		end
-	end)
-end
-
-function UI:FindFolderByNameOrPath(text)
-	-- Slash / hierarchy path first (address-bar style), then display path, then unique name.
-	local resolved = Data:ResolveFolderPath(text)
-	if resolved then
-		return resolved
-	end
-	local lower = text:lower()
-	local nameMatch = nil
-	local nameCount = 0
-	for id, folder in pairs(Data.db.global.folders) do
-		local path = Data:GetFolderPath(id)
-		if path:lower() == lower then
-			return id
-		end
-		if folder.name:lower() == lower then
-			nameMatch = id
-			nameCount = nameCount + 1
-		end
-	end
-	if nameCount == 1 then
-		return nameMatch
-	end
-	return nil
-end
-
-function UI:PickIcon()
-	if not self.selectedEntryId then
-		addon():Notify("Select an entry first.", true)
-		self:SetStatus("Select an entry before choosing an icon.")
-		return
-	end
-	local opened = Compat.ShowIconPicker(function(icon)
-		self.currentIcon = Compat.NormalizeIcon(icon)
-		if self.iconWidget then
-			self.iconWidget:SetImage(Compat.GetIconTexture(self.currentIcon))
-		end
-		self:MarkDirty()
-	end)
-	if not opened then
-		addon():PromptName("Icon texture name (e.g. INV_Misc_QuestionMark):", self.currentIcon or Compat.DefaultIcon(), function(icon)
-			self.currentIcon = Compat.NormalizeIcon(icon)
-			if self.iconWidget then
-				self.iconWidget:SetImage(Compat.GetIconTexture(self.currentIcon))
-			end
-			self:MarkDirty()
-		end)
-	end
-end
-
-function UI:ShowIconPickerDialog(callback)
-	if self.iconPickerFrame then
-		AceGUI:Release(self.iconPickerFrame)
-		self.iconPickerFrame = nil
-	end
-	if self.iconPickerTimer then
-		addon():CancelTimer(self.iconPickerTimer)
-		self.iconPickerTimer = nil
-	end
-
-	local filter = ""
-	local iconList = {}
-	local scrollOffset = 0
-	local COLS = 10
-	local ROWS = 8
-	local CELL = 40
-	local NUM_SHOWN = COLS * ROWS
-
-	local frame = AceGUI:Create("Window")
-	frame:SetTitle("Choose Icon")
-	frame:SetLayout("List")
-	frame:SetWidth(460)
-	frame:SetHeight(480)
-	frame:EnableResize(false)
-	self.iconPickerFrame = frame
-
-	if frame.frame then
-		Compat.RaiseFrame(frame.frame)
-	end
-
-	local search = AceGUI:Create("EditBox")
-	search:SetLabel("Spell name, spell ID, or texture name")
-	search:SetFullWidth(true)
-	search:DisableButton(true)
-	search:SetText("")
-	frame:AddChild(search)
-
-	local status = AceGUI:Create("Label")
-	status:SetFullWidth(true)
-	status:SetText("")
-	frame:AddChild(status)
-
-	-- Native recycled grid (same idea as Blizzard's macro popup): full icon
-	-- pool is scrollable; only a viewport of buttons exists.
-	-- IMPORTANT: parent native frames to the Window frame, not an AceGUI
-	-- SimpleGroup. AceGUI pools SimpleGroups — leftover children would reappear
-	-- in Contents the next time RefreshList acquires one (e.g. on Save).
-	local spacer = AceGUI:Create("SimpleGroup")
-	spacer:SetFullWidth(true)
-	spacer:SetHeight(ROWS * CELL + 4)
-	spacer:SetLayout("Fill")
-	frame:AddChild(spacer)
-
-	local container = CreateFrame("Frame", nil, frame.frame)
-	container:SetAllPoints(spacer.frame)
-
-	local scrollBar = CreateFrame("Slider", nil, container, "UIPanelScrollBarTemplate")
-	scrollBar:SetPoint("TOPLEFT", container, "TOPRIGHT", -18, -16)
-	scrollBar:SetPoint("BOTTOMLEFT", container, "BOTTOMRIGHT", -18, 16)
-	scrollBar:SetMinMaxValues(0, 0)
-	scrollBar:SetValueStep(1)
-	if scrollBar.SetObeyStepOnDrag then
-		scrollBar:SetObeyStepOnDrag(true)
-	end
-	scrollBar:SetValue(0)
-
-	local buttonParent = CreateFrame("Frame", nil, container)
-	buttonParent:SetPoint("TOPLEFT")
-	buttonParent:SetPoint("BOTTOMRIGHT", container, "BOTTOMRIGHT", -22, 0)
-	buttonParent:EnableMouseWheel(true)
-
-	-- Keep the grid aligned if AceGUI reflows the spacer.
-	spacer.frame:HookScript("OnSizeChanged", function()
-		if container then
-			container:ClearAllPoints()
-			container:SetAllPoints(spacer.frame)
-		end
-	end)
-
-	local function destroyGrid()
-		if not container then
-			return
-		end
-		container:Hide()
-		container:SetParent(nil)
-		container:ClearAllPoints()
-		container = nil
-	end
-
-	local function closePicker()
-		if self.iconPickerTimer then
-			addon():CancelTimer(self.iconPickerTimer)
-			self.iconPickerTimer = nil
-		end
-		destroyGrid()
-		AceGUI:Release(frame)
-		self.iconPickerFrame = nil
-	end
-
-	local function selectIcon(icon)
-		closePicker()
-		callback(Compat.NormalizeIcon(icon))
-	end
-
-	local buttons = {}
-	for i = 1, NUM_SHOWN do
-		local btn = CreateFrame("Button", nil, buttonParent)
-		btn:SetSize(CELL - 2, CELL - 2)
-		local col = (i - 1) % COLS
-		local row = math.floor((i - 1) / COLS)
-		btn:SetPoint("TOPLEFT", buttonParent, "TOPLEFT", col * CELL, -row * CELL)
-		local tex = btn:CreateTexture(nil, "ARTWORK")
-		tex:SetAllPoints()
-		btn.tex = tex
-		btn:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square", "ADD")
-		btn:SetScript("OnClick", function(self)
-			if self.iconValue ~= nil then
-				selectIcon(self.iconValue)
-			end
-		end)
-		btn:Hide()
-		buttons[i] = btn
-	end
-
-	local function currentList()
-		local q = filter:match("^%s*(.-)%s*$") or ""
-		if q == "" then
-			-- Full Blizzard macro UI icon pool, with "?" always first.
-			local defaultIcon = Compat.DefaultIcon()
-			local list = { defaultIcon }
-			local pool = Compat.CollectMacroIcons()
-			for i = 1, #pool do
-				local icon = pool[i]
-				local normalized = Compat.NormalizeIcon(icon)
-				if normalized ~= defaultIcon and normalized ~= "INV_MISC_QUESTIONMARK"
-					and tostring(icon) ~= "134400" then
-					list[#list + 1] = icon
-				end
-			end
-			return list
-		end
-		return Compat.ResolveIconSearch(q)
-	end
-
-	local function updateVisible()
-		local totalRows = math.max(1, math.ceil(#iconList / COLS))
-		local maxOffset = math.max(0, totalRows - ROWS)
-		if scrollOffset > maxOffset then
-			scrollOffset = maxOffset
-		end
-		for i = 1, NUM_SHOWN do
-			local idx = scrollOffset * COLS + i
-			local icon = iconList[idx]
-			local btn = buttons[i]
-			if icon ~= nil then
-				btn.iconValue = icon
-				btn.tex:SetTexture(type(icon) == "number" and icon or Compat.GetIconTexture(icon))
-				btn:Show()
-			else
-				btn.iconValue = nil
-				btn:Hide()
-			end
-		end
-	end
-
-	local function refreshGrid()
-		iconList = currentList()
-		local totalRows = math.max(1, math.ceil(#iconList / COLS))
-		local maxOffset = math.max(0, totalRows - ROWS)
-		scrollOffset = 0
-		scrollBar:SetMinMaxValues(0, maxOffset)
-		scrollBar:SetValue(0)
-		if maxOffset > 0 then
-			scrollBar:Show()
-		else
-			scrollBar:Hide()
-		end
-		updateVisible()
-
-		if #iconList == 0 then
-			status:SetText("No matching icons. Try a spell name, spell ID, or texture name.")
-		else
-			status:SetText(string.format("%d icons — click one to use it.", #iconList))
-		end
-	end
-
-	scrollBar:SetScript("OnValueChanged", function(_, value)
-		scrollOffset = math.floor(value + 0.5)
-		updateVisible()
-	end)
-
-	buttonParent:SetScript("OnMouseWheel", function(_, delta)
-		local _, maxOffset = scrollBar:GetMinMaxValues()
-		scrollBar:SetValue(math.min(maxOffset, math.max(0, scrollOffset - delta)))
-	end)
-
-	frame:SetCallback("OnClose", function(widget)
-		if self.iconPickerTimer then
-			addon():CancelTimer(self.iconPickerTimer)
-			self.iconPickerTimer = nil
-		end
-		destroyGrid()
-		AceGUI:Release(widget)
-		if self.iconPickerFrame == widget then
-			self.iconPickerFrame = nil
-		end
-	end)
-
-	search:SetCallback("OnTextChanged", function(_, _, text)
-		filter = text or ""
-		if self.iconPickerTimer then
-			addon():CancelTimer(self.iconPickerTimer)
-		end
-		self.iconPickerTimer = addon():ScheduleTimer(function()
-			self.iconPickerTimer = nil
-			if self.iconPickerFrame then
-				refreshGrid()
-			end
-		end, 0.15)
-	end)
-
-	search:SetCallback("OnEnterPressed", function(_, _, text)
-		filter = text or ""
-		local matches = Compat.ResolveIconSearch(filter)
-		if #matches > 0 then
-			selectIcon(matches[1])
-		elseif filter:match("%S") then
-			selectIcon(filter)
-		end
-	end)
-
-	refreshGrid()
 end
 
 function UI:CreateBlizzardMacro(entryId)
@@ -2039,20 +1278,14 @@ function UI:CreateBlizzardMacro(entryId)
 		return
 	end
 	if id ~= self.selectedEntryId then
-		self:SelectEntry(id, true)
-	end
-	-- Save first if dirty so macro uses latest text.
-	if self:IsDirty() then
-		if not self:SaveCurrentEntry() then
-			return
-		end
+		self:SelectEntry(id)
 	end
 	local entry = Data:GetEntry(id)
 	if not entry then
 		return
 	end
 	self:ShowMacroScopeDialog(function(perCharacter)
-		local ok, message = MacroBridge:CreateFromEntry(entry, perCharacter)
+		local ok, message = MacroBridge:UpsertFromEntry(entry, perCharacter)
 		addon():Notify(message, not ok)
 		self:SetStatus(message)
 	end)
@@ -2063,26 +1296,24 @@ function UI:CreateBlizzardMacrosFromFolder(folderId)
 	if not folder then
 		return
 	end
-	-- Save first if dirty so macros use latest text for the open entry.
-	if self:IsDirty() then
-		if not self:SaveCurrentEntry() then
-			return
-		end
-	end
-	self:ShowFolderMacroScopeDialog(function(perCharacter, includeChildren)
-		local entries = Data:CollectEntries(folderId, includeChildren)
+	self:ShowFolderMacroScopeDialog(function(perCharacter)
+		local entries = Data:CollectEntries(folderId)
 		if #entries == 0 then
-			local message = "No entries found in this folder."
+			local message = "No macros found in this folder."
 			addon():Notify(message, true)
 			self:SetStatus(message)
 			return
 		end
-		local created, failed = 0, 0
+		local created, updated, failed = 0, 0, 0
 		local lastError
 		for _, entry in ipairs(entries) do
-			local ok, message = MacroBridge:CreateFromEntry(entry, perCharacter)
+			local ok, message = MacroBridge:UpsertFromEntry(entry, perCharacter)
 			if ok then
-				created = created + 1
+				if message:find("^Updated") then
+					updated = updated + 1
+				else
+					created = created + 1
+				end
 			else
 				failed = failed + 1
 				lastError = message
@@ -2090,13 +1321,24 @@ function UI:CreateBlizzardMacrosFromFolder(folderId)
 		end
 		local message
 		if failed == 0 then
-			message = string.format("Created %d macro%s from folder.", created, created == 1 and "" or "s")
-		elseif created == 0 then
-			message = lastError or "Failed to create macros."
+			message = string.format(
+				"Exported %d macro%s (%d created, %d updated).",
+				created + updated,
+				(created + updated) == 1 and "" or "s",
+				created,
+				updated
+			)
+		elseif (created + updated) == 0 then
+			message = lastError or "Failed to export macros."
 		else
-			message = string.format("Created %d macro%s (%d failed).", created, created == 1 and "" or "s", failed)
+			message = string.format(
+				"Exported %d macro%s (%d failed).",
+				created + updated,
+				(created + updated) == 1 and "" or "s",
+				failed
+			)
 		end
-		addon():Notify(message, created == 0)
+		addon():Notify(message, (created + updated) == 0)
 		self:SetStatus(message)
 	end)
 end
@@ -2110,7 +1352,7 @@ function UI:ShowMacroScopeDialog(callback)
 	frame:SetTitle("Create Blizzard Macro")
 	frame:SetLayout("List")
 	frame:SetWidth(320)
-	frame:SetHeight(140)
+	frame:SetHeight(200)
 	frame:SetCallback("OnClose", function(widget)
 		AceGUI:Release(widget)
 		if self.scopeFrame == widget then
@@ -2125,7 +1367,7 @@ function UI:ShowMacroScopeDialog(callback)
 
 	local label = AceGUI:Create("Label")
 	label:SetFullWidth(true)
-	label:SetText("Choose macro type:")
+	label:SetText("Export macros to Blizzard macros.\n\n\n• Existing macros will be updated\n\n• New macros will be created\n\n\nExport to:\n")
 	frame:AddChild(label)
 
 	local spacer = AceGUI:Create("Label")
@@ -2135,7 +1377,7 @@ function UI:ShowMacroScopeDialog(callback)
 	frame:AddChild(spacer)
 
 	local globalBtn = AceGUI:Create("Button")
-	globalBtn:SetText("Global Macro")
+	globalBtn:SetText("Global Macros")
 	globalBtn:SetFullWidth(true)
 	globalBtn:SetCallback("OnClick", function()
 		AceGUI:Release(frame)
@@ -2145,7 +1387,7 @@ function UI:ShowMacroScopeDialog(callback)
 	frame:AddChild(globalBtn)
 
 	local charBtn = AceGUI:Create("Button")
-	charBtn:SetText("Character Macro")
+	charBtn:SetText("Character Macros")
 	charBtn:SetFullWidth(true)
 	charBtn:SetCallback("OnClick", function()
 		AceGUI:Release(frame)
@@ -2164,7 +1406,7 @@ function UI:ShowFolderMacroScopeDialog(callback)
 	frame:SetTitle("Create Blizzard Macros")
 	frame:SetLayout("List")
 	frame:SetWidth(360)
-	frame:SetHeight(200)
+	frame:SetHeight(215)
 	frame:EnableResize(false)
 	frame:SetCallback("OnClose", function(widget)
 		AceGUI:Release(widget)
@@ -2180,35 +1422,23 @@ function UI:ShowFolderMacroScopeDialog(callback)
 
 	local label = AceGUI:Create("Label")
 	label:SetFullWidth(true)
-	label:SetText("Create Blizzard macros for all folder contents.")
+	label:SetHeight(120)
+	label:SetText("Export macros to Blizzard macros.\n\n\n• Existing macros will be updated\n\n• New macros will be created\n\n• Missing macros will NOT be deleted.\n\n\nExport to:\n")
 	frame:AddChild(label)
 
 	local spacer = AceGUI:Create("Label")
 	spacer:SetFullWidth(true)
 	spacer:SetText(" ")
-	spacer:SetHeight(8)
+	spacer:SetHeight(12)
 	frame:AddChild(spacer)
-
-	local includeChildren = AceGUI:Create("CheckBox")
-	includeChildren:SetLabel("Include entries in child folders")
-	includeChildren:SetFullWidth(true)
-	includeChildren:SetValue(false)
-	frame:AddChild(includeChildren)
-
-	local spacer2 = AceGUI:Create("Label")
-	spacer2:SetFullWidth(true)
-	spacer2:SetText(" ")
-	spacer2:SetHeight(8)
-	frame:AddChild(spacer2)
 
 	local globalBtn = AceGUI:Create("Button")
 	globalBtn:SetText("Global Macros")
 	globalBtn:SetFullWidth(true)
 	globalBtn:SetCallback("OnClick", function()
-		local include = includeChildren:GetValue() and true or false
 		AceGUI:Release(frame)
 		self.scopeFrame = nil
-		callback(false, include)
+		callback(false)
 	end)
 	frame:AddChild(globalBtn)
 
@@ -2216,325 +1446,11 @@ function UI:ShowFolderMacroScopeDialog(callback)
 	charBtn:SetText("Character Macros")
 	charBtn:SetFullWidth(true)
 	charBtn:SetCallback("OnClick", function()
-		local include = includeChildren:GetValue() and true or false
 		AceGUI:Release(frame)
 		self.scopeFrame = nil
-		callback(true, include)
+		callback(true)
 	end)
 	frame:AddChild(charBtn)
-end
-
-function UI:ShowImportMacrosDialog(folderId)
-	local folder = Data:GetFolder(folderId)
-	if not folder or folderId == Data:GetRootId() then
-		addon():Notify("Select a folder before importing macros.", true)
-		return
-	end
-
-	if self.importFrame then
-		AceGUI:Release(self.importFrame)
-		self.importFrame = nil
-	end
-
-	local state = {
-		perCharacter = false,
-		filter = "",
-		selected = {}, -- [macroIndex] = true
-		macros = {},
-	}
-
-	local frame = AceGUI:Create("Window")
-	frame:SetTitle("Import Macros")
-	frame:SetLayout("List")
-	frame:SetWidth(420)
-	frame:SetHeight(520)
-	frame:EnableResize(false)
-	frame:SetCallback("OnClose", function(widget)
-		AceGUI:Release(widget)
-		if self.importFrame == widget then
-			self.importFrame = nil
-		end
-	end)
-	self.importFrame = frame
-
-	if frame.frame then
-		Compat.RaiseFrame(frame.frame)
-		-- Use more of the window chrome so the footer can sit near the bottom edge.
-		if frame.content then
-			frame.content:ClearAllPoints()
-			frame.content:SetPoint("TOPLEFT", frame.frame, "TOPLEFT", 12, -32)
-			frame.content:SetPoint("BOTTOMRIGHT", frame.frame, "BOTTOMRIGHT", -12, 8)
-		end
-	end
-
-	local intro = AceGUI:Create("Label")
-	intro:SetFullWidth(true)
-	intro:SetText(string.format("Import Blizzard macros into |cffffd100%s|r.", folder.name))
-	frame:AddChild(intro)
-
-	local scopeRow = AceGUI:Create("SimpleGroup")
-	scopeRow:SetFullWidth(true)
-	scopeRow:SetLayout("Flow")
-	frame:AddChild(scopeRow)
-
-	local globalBtn = AceGUI:Create("Button")
-	globalBtn:SetText("Global Macros")
-	globalBtn:SetWidth(190)
-	scopeRow:AddChild(globalBtn)
-
-	local charBtn = AceGUI:Create("Button")
-	charBtn:SetText("Character Macros")
-	charBtn:SetWidth(190)
-	scopeRow:AddChild(charBtn)
-
-	local filter = AceGUI:Create("EditBox")
-	filter:SetLabel("Filter by name")
-	filter:SetFullWidth(true)
-	filter:DisableButton(true)
-	frame:AddChild(filter)
-
-	local actionRow = AceGUI:Create("SimpleGroup")
-	actionRow:SetFullWidth(true)
-	actionRow:SetLayout("Flow")
-	frame:AddChild(actionRow)
-
-	local selectAllBtn = AceGUI:Create("Button")
-	selectAllBtn:SetText("Select All")
-	selectAllBtn:SetWidth(120)
-	actionRow:AddChild(selectAllBtn)
-
-	local clearBtn = AceGUI:Create("Button")
-	clearBtn:SetText("Clear")
-	clearBtn:SetWidth(80)
-	actionRow:AddChild(clearBtn)
-
-	local gapAfterActions = AceGUI:Create("Label")
-	gapAfterActions:SetFullWidth(true)
-	gapAfterActions:SetText(" ")
-	gapAfterActions:SetHeight(8)
-	frame:AddChild(gapAfterActions)
-
-	local status = AceGUI:Create("Label")
-	status:SetFullWidth(true)
-	status:SetText("")
-	frame:AddChild(status)
-
-	local gapAfterStatus = AceGUI:Create("Label")
-	gapAfterStatus:SetFullWidth(true)
-	gapAfterStatus:SetText(" ")
-	gapAfterStatus:SetHeight(8)
-	frame:AddChild(gapAfterStatus)
-
-	local listScroll = AceGUI:Create("ScrollFrame")
-	listScroll:SetFullWidth(true)
-	listScroll:SetHeight(200)
-	listScroll:SetLayout("List")
-	frame:AddChild(listScroll)
-
-	local footer = AceGUI:Create("SimpleGroup")
-	footer:SetFullWidth(true)
-	footer:SetLayout("Flow")
-	frame:AddChild(footer)
-
-	local importBtn = AceGUI:Create("Button")
-	importBtn:SetText("Import Selected")
-	importBtn:SetWidth(160)
-	footer:AddChild(importBtn)
-
-	local cancelBtn = AceGUI:Create("Button")
-	cancelBtn:SetText("Cancel")
-	cancelBtn:SetWidth(100)
-	footer:AddChild(cancelBtn)
-
-	local function layoutImportListHeight()
-		local content = frame.content
-		local listFrame = listScroll and listScroll.frame
-		local footerFrame = footer and footer.frame
-		local anchor = gapAfterStatus and gapAfterStatus.frame
-		if not content or not listFrame or not footerFrame or not anchor then
-			return
-		end
-
-		-- Pin footer to the bottom of the content area, then stretch the list
-		-- between the status gap and the footer (fills the empty modal space).
-		local contentW = content:GetWidth() or 0
-		footerFrame:ClearAllPoints()
-		footerFrame:SetPoint("BOTTOMLEFT", content, "BOTTOMLEFT", 0, 2)
-		footerFrame:SetPoint("BOTTOMRIGHT", content, "BOTTOMRIGHT", 0, 2)
-		if contentW > 0 then
-			footerFrame:SetWidth(contentW)
-		end
-
-		listFrame:ClearAllPoints()
-		listFrame:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -2)
-		listFrame:SetPoint("BOTTOMRIGHT", footerFrame, "TOPRIGHT", 0, 6)
-		local h = listFrame:GetHeight() or 0
-		if h > 0 then
-			listScroll:SetHeight(h)
-		end
-		if listScroll.DoLayout then
-			listScroll:DoLayout()
-		end
-	end
-
-	local origDoLayout = frame.DoLayout
-	frame.DoLayout = function(self)
-		origDoLayout(self)
-		layoutImportListHeight()
-	end
-
-	if frame.content then
-		frame.content:HookScript("OnSizeChanged", function()
-			layoutImportListHeight()
-		end)
-	end
-	C_Timer.After(0, function()
-		if frame.DoLayout then
-			frame:DoLayout()
-		end
-		layoutImportListHeight()
-	end)
-	C_Timer.After(0.05, layoutImportListHeight)
-
-	local function countSelected(visibleOnly)
-		local n = 0
-		for _, macro in ipairs(state.macros) do
-			if state.selected[macro.index] then
-				if not visibleOnly then
-					n = n + 1
-				else
-					local f = state.filter
-					if f == "" or macro.name:lower():find(f, 1, true) then
-						n = n + 1
-					end
-				end
-			end
-		end
-		return n
-	end
-
-	local function updateStatus()
-		local total = #state.macros
-		local selected = countSelected(false)
-		local scope = state.perCharacter and "character" or "global"
-		status:SetText(string.format("%d %s macro%s — %d selected", total, scope, total == 1 and "" or "s", selected))
-		importBtn:SetDisabled(selected == 0)
-	end
-
-	local function updateScopeButtons()
-		if state.perCharacter then
-			globalBtn:SetText("Global Macros")
-			charBtn:SetText("Character Macros")
-		else
-			globalBtn:SetText("Global Macros")
-			charBtn:SetText("Character Macros")
-		end
-	end
-
-	local function rebuildList()
-		listScroll:ReleaseChildren()
-		local filterLower = state.filter
-		local shown = 0
-		for _, macro in ipairs(state.macros) do
-			if filterLower == "" or macro.name:lower():find(filterLower, 1, true) then
-				shown = shown + 1
-				local row = AceGUI:Create("CheckBox")
-				row:SetLabel(macro.name)
-				row:SetFullWidth(true)
-				row:SetValue(state.selected[macro.index] and true or false)
-				row:SetCallback("OnValueChanged", function(_, _, checked)
-					if checked then
-						state.selected[macro.index] = true
-					else
-						state.selected[macro.index] = nil
-					end
-					updateStatus()
-				end)
-				listScroll:AddChild(row)
-			end
-		end
-		if shown == 0 then
-			local empty = AceGUI:Create("Label")
-			empty:SetFullWidth(true)
-			if #state.macros == 0 then
-				empty:SetText(state.perCharacter and "No character macros found." or "No global macros found.")
-			else
-				empty:SetText("No macros match this filter.")
-			end
-			listScroll:AddChild(empty)
-		end
-		updateStatus()
-		layoutImportListHeight()
-	end
-
-	local function loadScope(perCharacter)
-		state.perCharacter = perCharacter and true or false
-		state.macros = MacroBridge:ListMacros(state.perCharacter)
-		wipe(state.selected)
-		updateScopeButtons()
-		rebuildList()
-	end
-
-	globalBtn:SetCallback("OnClick", function()
-		loadScope(false)
-	end)
-	charBtn:SetCallback("OnClick", function()
-		loadScope(true)
-	end)
-
-	filter:SetCallback("OnTextChanged", function(_, _, text)
-		state.filter = (text or ""):match("^%s*(.-)%s*$"):lower() or ""
-		rebuildList()
-	end)
-
-	selectAllBtn:SetCallback("OnClick", function()
-		local filterLower = state.filter
-		for _, macro in ipairs(state.macros) do
-			if filterLower == "" or macro.name:lower():find(filterLower, 1, true) then
-				state.selected[macro.index] = true
-			end
-		end
-		rebuildList()
-	end)
-
-	clearBtn:SetCallback("OnClick", function()
-		wipe(state.selected)
-		rebuildList()
-	end)
-
-	importBtn:SetCallback("OnClick", function()
-		local toImport = {}
-		for _, macro in ipairs(state.macros) do
-			if state.selected[macro.index] then
-				toImport[#toImport + 1] = macro
-			end
-		end
-		local created, failed, lastError = MacroBridge:ImportToFolder(folderId, toImport)
-		local message
-		if failed == 0 then
-			message = string.format("Imported %d macro%s into \"%s\".", created, created == 1 and "" or "s", folder.name)
-		elseif created == 0 then
-			message = lastError or "Failed to import macros."
-		else
-			message = string.format("Imported %d macro%s (%d failed).", created, created == 1 and "" or "s", failed)
-		end
-		addon():Notify(message, created == 0)
-		self:SetStatus(message)
-		AceGUI:Release(frame)
-		self.importFrame = nil
-		if created > 0 then
-			self:SelectFolder(folderId, true)
-			self:RefreshAll()
-		end
-	end)
-
-	cancelBtn:SetCallback("OnClick", function()
-		AceGUI:Release(frame)
-		self.importFrame = nil
-	end)
-
-	loadScope(false)
-	layoutImportListHeight()
 end
 
 function UI:ClearSearch()
@@ -2593,7 +1509,7 @@ end
 function UI:CreateWindow()
 	local frame = AceGUI:Create("Frame")
 	frame:SetTitle("Scriptorium")
-	frame:SetStatusText("Account-wide macro repository")
+	frame:SetStatusText("Blizzard macro browser")
 	frame:SetLayout("Flow")
 	frame:SetWidth(1120)
 	frame:SetHeight(640)
@@ -2602,20 +1518,12 @@ function UI:CreateWindow()
 		if AceGUI:IsReleasing(widget) then
 			return
 		end
-		if self.autoSaveTimer then
-			addon():CancelTimer(self.autoSaveTimer)
-			self.autoSaveTimer = nil
-		end
 		if self.searchTimer then
 			addon():CancelTimer(self.searchTimer)
 			self.searchTimer = nil
 		end
 		if AddressBar and AddressBar.Destroy then
 			AddressBar:Destroy()
-		end
-		if self.importFrame then
-			AceGUI:Release(self.importFrame)
-			self.importFrame = nil
 		end
 		AceGUI:Release(widget)
 		self.frame = nil
@@ -2627,23 +1535,25 @@ function UI:CreateWindow()
 		self.bodyGroup = nil
 		self.listContainer = nil
 		self.navRow = nil
+		self.optionsRow = nil
 		self.addressCol = nil
 		self.searchCol = nil
 		self.addressHost = nil
 		self.detailContainer = nil
 		self.listGroup = nil
 		self.nameEdit = nil
-		self.descEdit = nil
 		self.bodyEdit = nil
 		self.iconWidget = nil
-		self.saveButton = nil
 		self.searchEdit = nil
 		self.searchClearButton = nil
 		self.sortButton = nil
+		self.macroButton = nil
+		self.pullMacrosButton = nil
+		self.syncOnLoginCheck = nil
+		self.syncOnMacroUpdateCheck = nil
 	end)
 	self.frame = frame
 
-	-- Shell: full-width address/search on top; tree + panes fill the rest.
 	local shell = AceGUI:Create("SimpleGroup")
 	shell:SetFullWidth(true)
 	shell:SetFullHeight(true)
@@ -2651,6 +1561,73 @@ function UI:CreateWindow()
 	shell:SetLayout("List")
 	frame:AddChild(shell)
 	self.shellGroup = shell
+
+	-- Top-left options: sync toggles + Pull Macros
+	local OPTIONS_ROW_HEIGHT = 28
+	local optionsRow = AceGUI:Create("SimpleGroup")
+	optionsRow:SetFullWidth(true)
+	optionsRow:SetHeight(OPTIONS_ROW_HEIGHT)
+	optionsRow:SetAutoAdjustHeight(false)
+	optionsRow:SetLayout("Flow")
+	shell:AddChild(optionsRow)
+	self.optionsRow = optionsRow
+	self.optionsRowHeight = OPTIONS_ROW_HEIGHT
+
+	local loginCheck = AceGUI:Create("CheckBox")
+	loginCheck:SetLabel("Update on Login")
+	loginCheck:SetValue(Data:GetSyncOnLogin())
+	loginCheck:SetWidth(140)
+	loginCheck:SetCallback("OnValueChanged", function(_, _, checked)
+		Data:SetSyncOnLogin(checked and true or false)
+	end)
+	loginCheck:SetCallback("OnEnter", function(widget)
+		GameTooltip:SetOwner(widget.frame, "ANCHOR_BOTTOMLEFT")
+		GameTooltip:SetText("Update on Login")
+		GameTooltip:AddLine("Pull Blizzard macros into Scriptorium when you log in.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	loginCheck:SetCallback("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+	optionsRow:AddChild(loginCheck)
+	self.syncOnLoginCheck = loginCheck
+
+	local autoCheck = AceGUI:Create("CheckBox")
+	autoCheck:SetLabel("Auto-Update Macros")
+	autoCheck:SetValue(Data:GetSyncOnMacroUpdate())
+	autoCheck:SetWidth(160)
+	autoCheck:SetCallback("OnValueChanged", function(_, _, checked)
+		Data:SetSyncOnMacroUpdate(checked and true or false)
+	end)
+	autoCheck:SetCallback("OnEnter", function(widget)
+		GameTooltip:SetOwner(widget.frame, "ANCHOR_BOTTOMLEFT")
+		GameTooltip:SetText("Auto-Update Macros")
+		GameTooltip:AddLine("Automatically update Scriptorium when a Blizzard macro changes.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	autoCheck:SetCallback("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+	optionsRow:AddChild(autoCheck)
+	self.syncOnMacroUpdateCheck = autoCheck
+
+	local pullBtn = AceGUI:Create("Button")
+	pullBtn:SetText("Pull Macros")
+	pullBtn:SetWidth(110)
+	pullBtn:SetCallback("OnClick", function()
+		self:PullMacros()
+	end)
+	pullBtn:SetCallback("OnEnter", function(widget)
+		GameTooltip:SetOwner(widget.frame, "ANCHOR_BOTTOMLEFT")
+		GameTooltip:SetText("Pull Macros")
+		GameTooltip:AddLine("Manually sync Scriptorium from your current Blizzard macros.", 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	pullBtn:SetCallback("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+	optionsRow:AddChild(pullBtn)
+	self.pullMacrosButton = pullBtn
 
 	local navRow = AceGUI:Create("SimpleGroup")
 	navRow:SetFullWidth(true)
@@ -2660,7 +1637,6 @@ function UI:CreateWindow()
 	shell:AddChild(navRow)
 	self.navRow = navRow
 
-	-- Address column (bar is anchored to the search editbox vertically).
 	local addressCol = AceGUI:Create("SimpleGroup")
 	addressCol:SetHeight(44)
 	addressCol:SetAutoAdjustHeight(false)
@@ -2676,14 +1652,12 @@ function UI:CreateWindow()
 	addressCol:AddChild(addressHost)
 	self.addressHost = addressHost
 
-	-- Gap between address and search.
 	local navGap = AceGUI:Create("Label")
 	navGap:SetText(" ")
 	navGap:SetWidth(16)
 	navGap:SetHeight(1)
 	navRow:AddChild(navGap)
 
-	-- Search column: label above the field.
 	local searchCol = AceGUI:Create("SimpleGroup")
 	searchCol:SetWidth(220)
 	searchCol:SetHeight(44)
@@ -2693,7 +1667,7 @@ function UI:CreateWindow()
 	self.searchCol = searchCol
 
 	local search = AceGUI:Create("EditBox")
-	search:SetLabel("Search Contents")
+	search:SetLabel("Search Macros")
 	search:SetFullWidth(true)
 	search:DisableButton(true)
 	search:SetCallback("OnEnterPressed", function(widget, event, text)
@@ -2754,7 +1728,6 @@ function UI:CreateWindow()
 	AddressBar:SetFolder(self.selectedFolderId or Data:GetRootId(), true)
 	self:AlignAddressWithSearch()
 
-	-- Small gap under the address/search row (SimpleGroup respects SetHeight; Labels do not).
 	local NAV_BOTTOM_GAP = 2
 	local navBottomGap = AceGUI:Create("SimpleGroup")
 	navBottomGap:SetFullWidth(true)
@@ -2765,7 +1738,6 @@ function UI:CreateWindow()
 	self.navBottomGap = navBottomGap
 	self.navBottomGapHeight = NAV_BOTTOM_GAP
 
-	-- Body: TreeGroup provides left tree; content holds list + detail.
 	local body = AceGUI:Create("SimpleGroup")
 	body:SetFullWidth(true)
 	body:SetAutoAdjustHeight(false)
@@ -2791,7 +1763,6 @@ function UI:CreateWindow()
 		if self._ignoreTreeSelect then
 			return
 		end
-		-- uniquevalue is path with \001 separators; last segment is folder id.
 		local folderId = uniquevalue
 		if type(uniquevalue) == "string" then
 			folderId = uniquevalue:match("([^\001]+)$") or uniquevalue
@@ -2802,15 +1773,14 @@ function UI:CreateWindow()
 	end)
 	tree:SetCallback("OnTreeResize", function()
 		self:ForceLayout()
-		self:DecorateTreeAddButtons()
+		self:DecorateTreeRows()
 		self:EnsureTreeDragger()
 		self:EnsureContentsDragger()
 	end)
-	-- Keep per-row "+" buttons in sync when the tree refreshes (expand/scroll).
 	local origRefreshTree = tree.RefreshTree
 	tree.RefreshTree = function(widget, ...)
 		origRefreshTree(widget, ...)
-		self:DecorateTreeAddButtons()
+		self:DecorateTreeRows()
 		self:EnsureTreeDragger()
 		self:EnsureContentsDragger()
 	end
@@ -2818,7 +1788,6 @@ function UI:CreateWindow()
 	self.treeGroup = tree
 	self:EnsureTreeDragger()
 
-	-- Content area inside tree group: Folder contents | Entry.
 	local content = AceGUI:Create("SimpleGroup")
 	content:SetFullWidth(true)
 	content:SetFullHeight(true)
@@ -2827,7 +1796,6 @@ function UI:CreateWindow()
 	tree:AddChild(content)
 	self.contentGroup = content
 
-	-- Centre list
 	local listContainer = AceGUI:Create("InlineGroup")
 	listContainer:SetTitle("Folder contents")
 	listContainer:SetWidth(320)
@@ -2837,7 +1805,6 @@ function UI:CreateWindow()
 	content:AddChild(listContainer)
 	self.listContainer = listContainer
 
-	-- Place sort control beside the "Folder contents" title text.
 	listContainer.titletext:ClearAllPoints()
 	listContainer.titletext:SetPoint("TOPLEFT", 14, 0)
 	listContainer.titletext:SetJustifyH("LEFT")
@@ -2856,11 +1823,10 @@ function UI:CreateWindow()
 	listScroll:SetLayout("List")
 	listContainer:AddChild(listScroll)
 	self.listGroup = listScroll
-	self:EnsureContentsEmptyContext()
 
-	-- Right detail (scroll so editor controls stay inside the frame)
+	-- Right detail: read-only macro viewer
 	local detail = AceGUI:Create("InlineGroup")
-	detail:SetTitle("Entry")
+	detail:SetTitle("Macro")
 	detail:SetWidth(480)
 	detail:SetFullHeight(true)
 	detail:SetAutoAdjustHeight(false)
@@ -2875,9 +1841,6 @@ function UI:CreateWindow()
 	local nameEdit = AceGUI:Create("EditBox")
 	nameEdit:SetLabel("Name")
 	nameEdit:SetFullWidth(true)
-	nameEdit:SetCallback("OnTextChanged", function()
-		if not self.suppressDirty then self:MarkDirty() end
-	end)
 	detailScroll:AddChild(nameEdit)
 	self.nameEdit = nameEdit
 
@@ -2894,80 +1857,36 @@ function UI:CreateWindow()
 	iconRow:AddChild(icon)
 	self.iconWidget = icon
 
-	local iconBtn = AceGUI:Create("Button")
-	iconBtn:SetText("Choose Icon")
-	iconBtn:SetWidth(120)
-	iconBtn:SetCallback("OnClick", function() self:PickIcon() end)
-	iconRow:AddChild(iconBtn)
-	self.iconButton = iconBtn
-
-	local descEdit = AceGUI:Create("EditBox")
-	descEdit:SetLabel("Description / Notes")
-	descEdit:SetFullWidth(true)
-	descEdit:SetCallback("OnTextChanged", function()
-		if not self.suppressDirty then self:MarkDirty() end
-	end)
-	detailScroll:AddChild(descEdit)
-	self.descEdit = descEdit
-
 	local bodyEdit = AceGUI:Create("MultiLineEditBox")
-	bodyEdit:SetLabel("Text Content")
+	bodyEdit:SetLabel("Macro Body")
 	bodyEdit:SetFullWidth(true)
-	bodyEdit:SetNumLines(12)
+	bodyEdit:SetNumLines(14)
 	bodyEdit:DisableButton(true)
-	bodyEdit:SetCallback("OnTextChanged", function()
-		if not self.suppressDirty then self:MarkDirty() end
-	end)
 	detailScroll:AddChild(bodyEdit)
 	self.bodyEdit = bodyEdit
+
+	self:SetupReadOnlyFields()
+	self._lockedName = ""
+	self._lockedBody = ""
 
 	local actions = AceGUI:Create("SimpleGroup")
 	actions:SetFullWidth(true)
 	actions:SetLayout("Flow")
 	detailScroll:AddChild(actions)
 
-	local function actionBtn(text, width, onClick)
-		local b = AceGUI:Create("Button")
-		b:SetText(text)
-		b:SetWidth(width)
-		b:SetCallback("OnClick", onClick)
-		actions:AddChild(b)
-		return b
-	end
-
-	self.saveButton = actionBtn("Save", 80, function()
-		self:SaveCurrentEntry()
-	end)
-	self.saveButton:SetDisabled(true)
-
-	self.macroButton = actionBtn("Create Blizzard Macro", 160, function()
+	local macroBtn = AceGUI:Create("Button")
+	macroBtn:SetText("Create Blizzard Macro")
+	macroBtn:SetWidth(180)
+	macroBtn:SetDisabled(true)
+	macroBtn:SetCallback("OnClick", function()
 		self:CreateBlizzardMacro()
 	end)
+	actions:AddChild(macroBtn)
+	self.macroButton = macroBtn
 
-	self.dupEntryButton = actionBtn("Duplicate", 90, function()
-		self:DuplicateSelectedEntry()
-	end)
-
-	self.delEntryButton = actionBtn("Delete", 80, function()
-		self:DeleteSelectedEntry()
-	end)
-
-	-- Auto-save timer: periodically save if dirty and entry selected.
-	self.autoSaveTimer = addon():ScheduleRepeatingTimer(function()
-		if self.frame and self.frame.frame and self.frame.frame:IsShown()
-			and self:IsDirty() and self.selectedEntryId then
-			self:SaveCurrentEntry()
-			if self.frame then
-				self.frame:SetStatusText("Auto-saved.")
-			end
-		end
-	end, 30)
-
-	self:LoadEntryIntoEditor(nil)
+	self:LoadMacroIntoViewer(nil)
 	frame:SetStatusText("Ready — /scriptorium or /scr to toggle")
 
-	-- AceGUI Flow lays out before TreeGroup content has a real width, which stacks
-	-- Contents/Entry until a resize. Nudge width to force a second layout pass.
 	self:ForceLayout()
 	addon():ScheduleTimer(function()
 		self:ForceLayout()

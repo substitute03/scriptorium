@@ -1,5 +1,5 @@
 --- Search.lua
---- Global search across entry name, description, and text body.
+--- Global search across macro name and body.
 local ADDON_NAME, ns = ...
 local Data = ns.Data
 
@@ -24,10 +24,7 @@ function Search:Query(rawQuery)
 
 	local entries = Data.db.global.entries
 	for _, entry in pairs(entries) do
-		if contains(entry.name, needle)
-			or contains(entry.description, needle)
-			or contains(entry.text, needle)
-		then
+		if contains(entry.name, needle) or contains(entry.text, needle) then
 			results[#results + 1] = {
 				entry = entry,
 				path = Data:GetEntryPath(entry.id),

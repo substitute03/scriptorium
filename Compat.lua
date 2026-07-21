@@ -39,6 +39,12 @@ function Compat.CreateMacro(name, icon, body, perCharacter)
 	return CreateMacro(name, icon, body, perCharacter and 1 or nil)
 end
 
+function Compat.EditMacro(index, name, icon, body)
+	icon = icon or DEFAULT_ICON
+	body = body or ""
+	return EditMacro(index, name, icon, body)
+end
+
 function Compat.IsAddonLoaded(name)
 	if C_AddOns and C_AddOns.IsAddOnLoaded then
 		return C_AddOns.IsAddOnLoaded(name)

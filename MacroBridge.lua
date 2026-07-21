@@ -1,5 +1,5 @@
 --- MacroBridge.lua
---- Create Blizzard macros from repository entries, and import macros into folders.
+--- Sync Blizzard macros into the repository mirror, and upsert Blizzard macros from macros.
 local ADDON_NAME, ns = ...
 local Compat = ns.Compat
 local Data = ns.Data
@@ -24,6 +24,35 @@ local function findMacroByName(name, perCharacter)
 		end
 	end
 	return nil
+end
+
+local function truncateMacroName(name)
+	name = name or "Scriptorium"
+	if #name > 16 then
+		return name:sub(1, 16)
+	end
+	return name
+end
+
+local function getPlayerName()
+	if UnitNameUnmodified then
+		return UnitNameUnmodified("player")
+	end
+	return UnitName("player")
+end
+
+local function getRealmName()
+	if GetNormalizedRealmName then
+		local normalized = GetNormalizedRealmName()
+		if normalized and normalized ~= "" then
+			return normalized
+		end
+	end
+	local realm = GetRealmName and GetRealmName() or nil
+	if realm and realm ~= "" then
+		return realm:gsub("%s+", "")
+	end
+	return "Unknown"
 end
 
 --- List Blizzard macros in the given scope.
@@ -55,57 +84,68 @@ function MacroBridge:ListMacros(perCharacter)
 	return macros
 end
 
---- Import one or more Blizzard macros into a folder as entries.
---- @param folderId string
---- @param macros table list of { name, icon, body }
---- @return created number
---- @return failed number
---- @return lastError string|nil
-function MacroBridge:ImportToFolder(folderId, macros)
-	if not folderId or folderId == Data:GetRootId() then
-		return 0, 0, "Cannot import macros into the root folder."
-	end
-	if not Data:GetFolder(folderId) then
-		return 0, 0, "Folder not found."
-	end
-	if not macros or #macros == 0 then
-		return 0, 0, "No macros selected."
-	end
+--- Import/reconcile Blizzard macros into the managed folder tree.
+--- Creates General Macros and Character Macros/<Realm>/<Character>, then reconciles.
+--- @return summary table
+function MacroBridge:SyncFromBlizzard()
+	local rootId = Data:GetRootId()
+	Data:PruneUnmanagedRootFolders()
 
-	local created, failed, lastError = 0, 0, nil
-	for _, macro in ipairs(macros) do
-		local id, err = Data:CreateEntry(folderId, macro.name or "Imported Macro")
-		if not id then
-			failed = failed + 1
-			lastError = tostring(err)
-		else
-			Data:UpdateEntry(id, {
-				icon = macro.icon,
-				text = macro.body or "",
-				description = "Imported from Blizzard macro.",
-			})
-			created = created + 1
-		end
+	local generalId = Data:EnsureFolder(rootId, Data.GENERAL_MACROS_NAME)
+	local gAdded, gUpdated, gRemoved = Data:ReconcileFolderMacros(generalId, self:ListMacros(false))
+
+	local charRootId = Data:EnsureFolder(rootId, Data.CHARACTER_MACROS_NAME)
+	local realmName = getRealmName()
+	local charName = getPlayerName() or "Unknown"
+	local realmId = Data:EnsureFolder(charRootId, realmName)
+	local charId, charFolder = Data:EnsureFolder(realmId, charName)
+	local _, classFile = UnitClass("player")
+	if charFolder and classFile then
+		charFolder.classFile = classFile
 	end
-	return created, failed, lastError
+	local cAdded, cUpdated, cRemoved = Data:ReconcileFolderMacros(charId, self:ListMacros(true))
+
+	Data.db.global.version = 2
+
+	return {
+		generalFolderId = generalId,
+		characterFolderId = charId,
+		realmFolderId = realmId,
+		characterRootId = charRootId,
+		realmName = realmName,
+		characterName = charName,
+		general = { added = gAdded, updated = gUpdated, removed = gRemoved },
+		character = { added = cAdded, updated = cUpdated, removed = cRemoved },
+	}
 end
 
---- Create a Blizzard macro from an entry.
+--- Upsert a Blizzard macro from a repository macro (update if exists, create if not).
+--- Never deletes Blizzard macros.
 --- @return ok boolean
 --- @return message string
-function MacroBridge:CreateFromEntry(entry, perCharacter)
+function MacroBridge:UpsertFromEntry(entry, perCharacter)
 	if not entry then
-		return false, "No entry selected."
+		return false, "No macro selected."
 	end
 
 	if Compat.IsInCombat() then
-		return false, "Cannot create macros during combat."
+		return false, "Cannot create or update macros during combat."
 	end
 
-	local name = entry.name or "Scriptorium"
-	-- Blizzard macro names are limited to 16 characters.
-	if #name > 16 then
-		name = name:sub(1, 16)
+	local name = truncateMacroName(entry.name)
+	local icon = Compat.NormalizeIcon(entry.icon)
+	local body = entry.text or ""
+	local existingIndex = findMacroByName(name, perCharacter)
+	local scope = perCharacter and "character" or "global"
+
+	if existingIndex then
+		local ok, result = pcall(function()
+			return Compat.EditMacro(existingIndex, name, icon, body)
+		end)
+		if not ok then
+			return false, "Failed to update macro: " .. tostring(result)
+		end
+		return true, string.format("Updated %s macro \"%s\".", scope, name)
 	end
 
 	local accountMax, charMax = Compat.GetMacroLimits()
@@ -121,14 +161,6 @@ function MacroBridge:CreateFromEntry(entry, perCharacter)
 		end
 	end
 
-	if findMacroByName(name, perCharacter) then
-		local scope = perCharacter and "character" or "global"
-		return false, string.format("A %s macro named \"%s\" already exists.", scope, name)
-	end
-
-	local icon = Compat.NormalizeIcon(entry.icon)
-	local body = entry.text or ""
-
 	local ok, result = pcall(function()
 		return Compat.CreateMacro(name, icon, body, perCharacter)
 	end)
@@ -141,6 +173,10 @@ function MacroBridge:CreateFromEntry(entry, perCharacter)
 		return false, "Failed to create macro (unknown error)."
 	end
 
-	local scope = perCharacter and "character" or "global"
 	return true, string.format("Created %s macro \"%s\".", scope, name)
+end
+
+--- @deprecated Use UpsertFromEntry
+function MacroBridge:CreateFromEntry(entry, perCharacter)
+	return self:UpsertFromEntry(entry, perCharacter)
 end
