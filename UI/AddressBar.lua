@@ -19,14 +19,13 @@ end
 -- Construction
 ------------------------------------------------------------------------
 
---- Create the address bar inside a host AceGUI widget's frame.
---- @param hostWidget AceGUI SimpleGroup (full width row cell)
+--- Create the address bar; alignment is applied by UI:AlignAddressWithSearch.
+--- @param hostWidget AceGUI SimpleGroup (kept for API compat; bar is reparented)
 function AddressBar:Create(hostWidget)
-	if self.host then
-		return self
+	if self.bar then
+		self:Destroy()
 	end
 
-	local hostFrame = hostWidget.content or hostWidget.frame
 	self.host = hostWidget
 	self.editing = false
 	self.suppressTextChanged = false
@@ -34,9 +33,10 @@ function AddressBar:Create(hostWidget)
 	self.suggestIndex = 0
 	self._folderId = Data:GetRootId()
 
-	local bar = CreateFrame("Frame", nil, hostFrame, "BackdropTemplate")
-	bar:SetPoint("TOPLEFT", hostFrame, "TOPLEFT", 0, 0)
-	bar:SetPoint("BOTTOMRIGHT", hostFrame, "BOTTOMRIGHT", 0, 0)
+	local parent = (hostWidget and (hostWidget.content or hostWidget.frame)) or UIParent
+	local bar = CreateFrame("Frame", nil, parent, "BackdropTemplate")
+	bar:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
+	bar:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 0, 0)
 	bar:SetBackdrop({
 		bgFile = "Interface\\ChatFrame\\ChatFrameBackground",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -68,8 +68,8 @@ function AddressBar:Create(hostWidget)
 	end)
 	self.hit = hit
 
-	-- Edit box used only while focused.
-	local edit = CreateFrame("EditBox", "ScriptoriumAddressEditBox", bar)
+	-- Edit box used only while focused (unnamed to avoid reuse conflicts).
+	local edit = CreateFrame("EditBox", nil, bar)
 	edit:SetPoint("TOPLEFT", bar, "TOPLEFT", 8, -4)
 	edit:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", -8, 4)
 	edit:SetFontObject(GameFontHighlightSmall)
@@ -167,8 +167,13 @@ function AddressBar:Destroy()
 		self.suggestFrame:SetParent(nil)
 		self.suggestFrame = nil
 	end
+	if self.bar then
+		self.bar:Hide()
+		self.bar:SetParent(nil)
+		self.bar:ClearAllPoints()
+		self.bar = nil
+	end
 	self.host = nil
-	self.bar = nil
 	self.display = nil
 	self.hit = nil
 	self.edit = nil
@@ -234,7 +239,7 @@ function AddressBar:ShowDisplayPath(folderId)
 	end
 end
 
---- Focused edit: slash path in a plain text box.
+--- Focused edit: slash path in a plain text box (root name omitted).
 function AddressBar:EnterEditMode()
 	if not self.edit then
 		return
@@ -254,8 +259,8 @@ function AddressBar:EnterEditMode()
 	self.edit:Show()
 	self.suppressTextChanged = false
 	self.edit:SetFocus()
-	self.edit:HighlightText()
-	self:HideSuggestions()
+	self.edit:SetCursorPosition(#path)
+	self:UpdateSuggestions(path)
 end
 
 --- @param cancel boolean when true, discard typed path and restore display

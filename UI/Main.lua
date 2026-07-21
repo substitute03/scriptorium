@@ -481,17 +481,23 @@ function UI:LayoutNavRow()
 end
 
 function UI:AlignAddressWithSearch()
-	local host = self.addressHost and self.addressHost.frame
+	local bar = AddressBar and AddressBar.bar
 	local edit = self.searchEdit and self.searchEdit.editbox
-	local col = self.addressCol and self.addressCol.frame
-	if not host or not edit or not col then
+	local nav = self.navRow and self.navRow.frame
+	if not bar or not edit or not nav then
 		return
 	end
-	host:ClearAllPoints()
-	host:SetPoint("LEFT", col, "LEFT", 0, 0)
-	host:SetPoint("RIGHT", col, "RIGHT", 0, 0)
-	host:SetPoint("TOP", edit, "TOP", 0, 0)
-	host:SetPoint("BOTTOM", edit, "BOTTOM", 0, 0)
+	-- Parent to the nav row and pin beside the search edit so AceGUI layout
+	-- cannot shove the breadcrumb into the tree panel.
+	bar:SetParent(nav)
+	bar:ClearAllPoints()
+	bar:SetPoint("LEFT", nav, "LEFT", 0, 0)
+	bar:SetPoint("RIGHT", edit, "LEFT", -12, 0)
+	bar:SetPoint("TOP", edit, "TOP", 0, 0)
+	bar:SetPoint("BOTTOM", edit, "BOTTOM", 0, 0)
+	local level = (nav.GetFrameLevel and nav:GetFrameLevel()) or 0
+	bar:SetFrameLevel(level + 10)
+	bar:Show()
 end
 
 function UI:LayoutBodyHeight()
@@ -1354,9 +1360,12 @@ function UI:ShowMacroScopeDialog(callback)
 	frame:SetWidth(320)
 	frame:SetHeight(200)
 	frame:SetCallback("OnClose", function(widget)
-		AceGUI:Release(widget)
 		if self.scopeFrame == widget then
 			self.scopeFrame = nil
+		end
+		self:UpdateEscapeTarget()
+		if not AceGUI:IsReleasing(widget) then
+			AceGUI:Release(widget)
 		end
 	end)
 	self.scopeFrame = frame
@@ -1364,6 +1373,7 @@ function UI:ShowMacroScopeDialog(callback)
 	if frame.frame then
 		Compat.RaiseFrame(frame.frame)
 	end
+	self:UpdateEscapeTarget()
 
 	local label = AceGUI:Create("Label")
 	label:SetFullWidth(true)
@@ -1380,8 +1390,9 @@ function UI:ShowMacroScopeDialog(callback)
 	globalBtn:SetText("Global Macros")
 	globalBtn:SetFullWidth(true)
 	globalBtn:SetCallback("OnClick", function()
-		AceGUI:Release(frame)
 		self.scopeFrame = nil
+		AceGUI:Release(frame)
+		self:UpdateEscapeTarget()
 		callback(false)
 	end)
 	frame:AddChild(globalBtn)
@@ -1390,8 +1401,9 @@ function UI:ShowMacroScopeDialog(callback)
 	charBtn:SetText("Character Macros")
 	charBtn:SetFullWidth(true)
 	charBtn:SetCallback("OnClick", function()
-		AceGUI:Release(frame)
 		self.scopeFrame = nil
+		AceGUI:Release(frame)
+		self:UpdateEscapeTarget()
 		callback(true)
 	end)
 	frame:AddChild(charBtn)
@@ -1409,9 +1421,12 @@ function UI:ShowFolderMacroScopeDialog(callback)
 	frame:SetHeight(215)
 	frame:EnableResize(false)
 	frame:SetCallback("OnClose", function(widget)
-		AceGUI:Release(widget)
 		if self.scopeFrame == widget then
 			self.scopeFrame = nil
+		end
+		self:UpdateEscapeTarget()
+		if not AceGUI:IsReleasing(widget) then
+			AceGUI:Release(widget)
 		end
 	end)
 	self.scopeFrame = frame
@@ -1419,6 +1434,7 @@ function UI:ShowFolderMacroScopeDialog(callback)
 	if frame.frame then
 		Compat.RaiseFrame(frame.frame)
 	end
+	self:UpdateEscapeTarget()
 
 	local label = AceGUI:Create("Label")
 	label:SetFullWidth(true)
@@ -1436,8 +1452,9 @@ function UI:ShowFolderMacroScopeDialog(callback)
 	globalBtn:SetText("Global Macros")
 	globalBtn:SetFullWidth(true)
 	globalBtn:SetCallback("OnClick", function()
-		AceGUI:Release(frame)
 		self.scopeFrame = nil
+		AceGUI:Release(frame)
+		self:UpdateEscapeTarget()
 		callback(false)
 	end)
 	frame:AddChild(globalBtn)
@@ -1446,8 +1463,9 @@ function UI:ShowFolderMacroScopeDialog(callback)
 	charBtn:SetText("Character Macros")
 	charBtn:SetFullWidth(true)
 	charBtn:SetCallback("OnClick", function()
-		AceGUI:Release(frame)
 		self.scopeFrame = nil
+		AceGUI:Release(frame)
+		self:UpdateEscapeTarget()
 		callback(true)
 	end)
 	frame:AddChild(charBtn)
@@ -1484,8 +1502,40 @@ function UI:ToggleSortMode()
 end
 
 ------------------------------------------------------------------------
--- Window construction
+-- Escape key: close modal first, otherwise close the main window
+-- CloseSpecialWindows hides EVERY shown UISpecialFrames entry, so we keep
+-- a single global target and point it at the modal or the main window.
 ------------------------------------------------------------------------
+
+local ESCAPE_GLOBAL = "ScriptoriumEscapeTarget"
+
+function UI:EnsureEscapeRegistered()
+	UISpecialFrames = UISpecialFrames or {}
+	for i = 1, #UISpecialFrames do
+		if UISpecialFrames[i] == ESCAPE_GLOBAL then
+			return
+		end
+	end
+	table.insert(UISpecialFrames, ESCAPE_GLOBAL)
+end
+
+--- Point Escape at the topmost Scriptorium window (modal > main).
+function UI:UpdateEscapeTarget()
+	self:EnsureEscapeRegistered()
+	local target
+	if self.scopeFrame and self.scopeFrame.frame and self.scopeFrame.frame:IsShown() then
+		target = self.scopeFrame.frame
+	elseif self.frame and self.frame.frame and self.frame.frame:IsShown() then
+		target = self.frame.frame
+	end
+	_G[ESCAPE_GLOBAL] = target
+end
+
+function UI:ClearEscapeTarget()
+	if _G[ESCAPE_GLOBAL] then
+		_G[ESCAPE_GLOBAL] = nil
+	end
+end
 
 function UI:Toggle()
 	if self.frame and self.frame:IsShown() then
@@ -1498,6 +1548,7 @@ end
 function UI:Show()
 	if self.frame then
 		self.frame:Show()
+		self:UpdateEscapeTarget()
 		self:RefreshAll()
 		return
 	end
@@ -1518,6 +1569,10 @@ function UI:CreateWindow()
 		if AceGUI:IsReleasing(widget) then
 			return
 		end
+		if self.scopeFrame then
+			AceGUI:Release(self.scopeFrame)
+			self.scopeFrame = nil
+		end
 		if self.searchTimer then
 			addon():CancelTimer(self.searchTimer)
 			self.searchTimer = nil
@@ -1525,6 +1580,7 @@ function UI:CreateWindow()
 		if AddressBar and AddressBar.Destroy then
 			AddressBar:Destroy()
 		end
+		self:ClearEscapeTarget()
 		AceGUI:Release(widget)
 		self.frame = nil
 		self.treeGroup = nil
@@ -1553,6 +1609,7 @@ function UI:CreateWindow()
 		self.syncOnMacroUpdateCheck = nil
 	end)
 	self.frame = frame
+	self:UpdateEscapeTarget()
 
 	local shell = AceGUI:Create("SimpleGroup")
 	shell:SetFullWidth(true)

@@ -94,11 +94,10 @@ function Scriptorium:SlashCommand(input)
 end
 
 function Scriptorium:Notify(message, isError)
-	local prefix = "|cffc4a35aScriptorium|r: "
 	if isError then
-		self:Print(prefix .. "|cffff6666" .. message .. "|r")
+		self:Print("|cffff6666" .. message .. "|r")
 	else
-		self:Print(prefix .. message)
+		self:Print(message)
 	end
 end
 
